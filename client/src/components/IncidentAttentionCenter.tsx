@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { AlertCircle, CheckCircle2, Clock3, UserRound } from "lucide-react";
 import ExecutionDetailDialog from "@/components/ExecutionDetailDialog";
 import IncidentLifecycleDialog from "@/components/IncidentLifecycleDialog";
@@ -34,6 +35,8 @@ function ageLabel(minutes: number | null) {
 }
 
 export default function IncidentAttentionCenter({ incidents, loading }: { incidents: Incident[]; loading: boolean }) {
+  const { user } = useAuth();
+  const canOperate = user?.role === "admin" || user?.role === "operator";
   const [filter, setFilter] = useState<IncidentFilter>("attention");
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
   const [selectedExecution, setSelectedExecution] = useState<string | null>(null);
@@ -44,7 +47,7 @@ export default function IncidentAttentionCenter({ incidents, loading }: { incide
     <Card className="mt-6 border-0">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base"><AlertCircle className="h-5 w-5 text-feedback-error" />Centro de atenção</CardTitle>
-        <p className="text-sm text-muted-foreground">Acompanhe o atendimento de cada incidente. Abra um cartão para assumir, investigar ou registrar a resolução.</p>
+        <p className="text-sm text-muted-foreground">{canOperate ? "Acompanhe o atendimento de cada incidente. Abra um cartão para assumir, investigar ou registrar a resolução." : "Acompanhe o atendimento de cada incidente. Abra um cartão para consultar os detalhes e o histórico."}</p>
         <div className="flex flex-wrap gap-2 pt-2 lg:hidden" aria-label="Etapas dos incidentes">{columns.map(({ value, label, items }) => <Button key={value} type="button" size="sm" aria-pressed={filter === value} variant={filter === value ? "default" : "outline"} onClick={() => setFilter(value)}>{label} ({loading ? "…" : items.length})</Button>)}</div>
       </CardHeader>
       <CardContent className="grid gap-4 lg:grid-cols-3">
@@ -58,7 +61,7 @@ export default function IncidentAttentionCenter({ incidents, loading }: { incide
                 <span className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground"><UserRound className="size-3.5 shrink-0" /><span className="min-w-0 break-all">{incident.lifecycle.owner || "Sem responsável"}</span></span>
                 <span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground"><span className="flex items-center gap-1"><Clock3 className="size-3 shrink-0" />{value === "resolved" ? incident.lifecycle.resolvedAt ? `Resolvido em ${new Date(incident.lifecycle.resolvedAt).toLocaleDateString("pt-BR")}` : "Resolvido" : ageLabel(incident.ageMinutes)}{incident.overdue ? " · atrasado" : ""}</span><span>{incident.count} ocorrência(s)</span></span>
                 {incident.silenced && <span className="mt-2 block text-[11px] text-muted-foreground">Notificações silenciadas</span>}
-                <span className="mt-3 block border-t pt-2 text-xs font-medium text-primary">{incident.nextAction}</span>
+                <span className="mt-3 block border-t pt-2 text-xs font-medium text-primary">{canOperate ? incident.nextAction : "Consultar detalhes do incidente"}</span>
               </button>) : <div className="flex min-h-32 flex-col items-center justify-center px-2 text-center"><CheckCircle2 className="size-5 text-muted-foreground" /><p className="mt-2 text-xs text-muted-foreground">{value === "attention" ? "Nenhum incidente pendente." : value === "investigating" ? "Nenhum incidente em investigação." : "Nenhuma resolução registrada."}</p></div>}
               {value === "resolved" && !loading && items.length > 5 && <Button type="button" size="sm" variant="ghost" className="w-full" onClick={() => setShowAllResolved((current) => !current)}>{showAllResolved ? "Mostrar apenas os 5 mais recentes" : `Ver mais ${items.length - 5} resolvidos`}</Button>}
             </div>
