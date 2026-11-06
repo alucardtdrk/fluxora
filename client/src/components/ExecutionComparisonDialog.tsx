@@ -1,3 +1,4 @@
+import { BRAZIL_TIME_ZONE } from "@shared/timezone";
 import { useMemo } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, GitCompareArrows } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -63,7 +64,7 @@ export default function ExecutionComparisonDialog({ executionIds, open, onOpenCh
 }
 
 function ExecutionSummary({ execution }: { execution: any }) {
-  return <div className="rounded-xl bg-background p-4"><div className="flex items-center justify-between gap-3"><p className="font-semibold">Execução #{execution.id}</p><Badge variant="outline">{statusLabel(execution.status)}</Badge></div><p className="mt-2 text-xs text-muted-foreground">{execution.startedAt ? new Date(execution.startedAt).toLocaleString("pt-BR") : "Data indisponível"}</p><p className="mt-3 flex items-center gap-1 text-sm"><Clock3 className="h-4 w-4 text-feedback-info" />{execution.duration != null ? `${execution.duration}s` : "Duração indisponível"} · {(execution.nodes ?? []).length} etapas</p></div>;
+  return <div className="rounded-xl bg-background p-4"><div className="flex items-center justify-between gap-3"><p className="font-semibold">Execução #{execution.id}</p><Badge variant="outline">{statusLabel(execution.status)}</Badge></div><p className="mt-2 text-xs text-muted-foreground">{execution.startedAt ? new Date(execution.startedAt).toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE }) : "Data indisponível"}</p><p className="mt-3 flex items-center gap-1 text-sm"><Clock3 className="h-4 w-4 text-feedback-info" />{execution.duration != null ? `${execution.duration}s` : "Duração indisponível"} · {(execution.nodes ?? []).length} etapas</p></div>;
 }
 
 function ChangedData({ rows, leftId, rightId }: { rows: any[]; leftId: string; rightId: string }) {

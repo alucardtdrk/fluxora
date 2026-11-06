@@ -1,3 +1,4 @@
+import { BRAZIL_TIME_ZONE } from "@shared/timezone";
 import { AlertTriangle, CheckCircle2, Clock3, Database, RefreshCw, Server, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,7 @@ export default function HistoryBackupPanel({ archive, loading, syncing, activity
   const historyPercent = sourceCount ? Math.min(100, Math.round((historyChecked / sourceCount) * 100)) : 0;
   const historyComplete = Boolean(state.backfillComplete && state.archiveFormatVersion === 2 && missingCount === 0);
   const fullyProtected = historyComplete && detailsPending === 0;
-  const lastUpdated = state.lastSyncAt ? new Date(String(state.lastSyncAt)).toLocaleString("pt-BR") : "Ainda não executado";
+  const lastUpdated = state.lastSyncAt ? new Date(String(state.lastSyncAt)).toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE }) : "Ainda não executado";
   const hasError = Boolean(state.lastError);
   const errorMessage = String(state.lastError || "").toLowerCase() === "fetch failed"
     ? "A comunicação com o n8n ou o Firestore foi interrompida temporariamente. O progresso anterior está salvo; tente executar o ciclo novamente."

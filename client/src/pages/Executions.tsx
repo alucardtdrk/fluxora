@@ -1,3 +1,4 @@
+import { BRAZIL_TIME_ZONE } from "@shared/timezone";
 import { useDeferredValue, useEffect, useState } from "react";
 import { ArrowLeft, Eye, GitCompareArrows, RefreshCw, Search, Timer, X } from "lucide-react";
 import { Link, useSearchParams } from "wouter";
@@ -211,7 +212,7 @@ export default function Executions() {
                           </div>
                         </div>
                         <Badge className={`w-fit justify-self-center ${badgeClass(item.status)}`}>{label(item.status)}</Badge>
-                        <span className="justify-self-center text-center text-xs text-muted-foreground">{item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR") : "-"}</span>
+                        <span className="justify-self-center text-center text-xs text-muted-foreground">{item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE }) : "-"}</span>
                         <span className="justify-self-center text-center text-xs text-muted-foreground">{item.duration != null ? `${item.duration}s` : "-"}</span>
                         <Badge className={`w-fit justify-self-center ${item.source === "firestore" ? "bg-feedback-info-surface text-feedback-info" : "bg-feedback-success-surface text-feedback-success"}`}>{item.source === "firestore" ? "Arquivo" : "n8n"}</Badge>
                         <span className="justify-self-center font-mono text-[11px] text-muted-foreground">#{item.id}</span>

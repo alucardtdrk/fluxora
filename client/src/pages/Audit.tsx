@@ -1,3 +1,4 @@
+import { BRAZIL_TIME_ZONE } from "@shared/timezone";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Clock3, FileClock, Search, ShieldAlert, Users } from "lucide-react";
 import OperationsShell from "@/components/OperationsShell";
@@ -15,7 +16,7 @@ type Status = "success" | "failure";
 type AuditEvent = Record<string, any>;
 const categories: Record<Category, string> = { workflow: "Workflows", incident: "Incidentes", configuration: "Configurações", access: "Acessos", history: "Histórico", data: "Consultas técnicas" };
 const actions: Record<string, string> = { "workflow.toggle": "Status do workflow alterado", "workflow.node_update": "Node editado", "workflow.restore": "Versão restaurada", "incident.update": "Incidente atualizado", "slo.save": "Meta operacional atualizada", "runbook.save": "Plano de resposta atualizado", "alert_rule.save": "Regra de alerta atualizada", "user.save": "Acesso criado ou atualizado", "user.status": "Status de acesso alterado", "user.delete": "Acesso removido", "history.sync": "Histórico sincronizado", "history.details_preserve": "Detalhes preservados", "execution.details_view": "Detalhes técnicos consultados" };
-const formatDate = (value: unknown) => { const date = new Date(String(value || "")); return Number.isNaN(date.getTime()) ? "Data indisponível" : date.toLocaleString("pt-BR"); };
+const formatDate = (value: unknown) => { const date = new Date(String(value || "")); return Number.isNaN(date.getTime()) ? "Data indisponível" : date.toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE }); };
 function JsonBlock({ title, value }: { title: string; value: unknown }) { if (value == null || (typeof value === "object" && !Object.keys(value as object).length)) return null; return <div><p className="mb-2 text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">{title}</p><pre className="max-h-60 overflow-auto rounded-xl bg-muted/70 p-4 text-xs leading-5">{JSON.stringify(value, null, 2)}</pre></div>; }
 
 export default function Audit() {

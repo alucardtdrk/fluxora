@@ -1,3 +1,4 @@
+import { BRAZIL_TIME_ZONE } from "@shared/timezone";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useRoute } from "wouter";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Clock3, Code2, ExternalLink, Eye, Play, RefreshCw, ShieldCheck, Workflow } from "lucide-react";
@@ -196,7 +197,7 @@ export default function WorkflowDetail() {
                         <div key={item.id} className="grid gap-3 px-6 py-4 md:grid-cols-[1.2fr_.7fr_.5fr_auto] md:items-center">
                           <div>
                             <p className="truncate text-sm font-semibold text-foreground">{item.sectionName || "Fluxo principal"}</p>
-                            <p className="mt-1 text-[11px] text-muted-foreground">#{item.id} · {item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR") : "-"}</p>
+                            <p className="mt-1 text-[11px] text-muted-foreground">#{item.id} · {item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE }) : "-"}</p>
                           </div>
                           <Badge className={`w-fit ${statusBadge(item.status)}`}>{statusLabel(item.status)}</Badge>
                           <span className="text-xs text-muted-foreground">{item.duration != null ? `${item.duration}s` : "-"}</span>
@@ -258,7 +259,7 @@ export default function WorkflowDetail() {
                       <button key={item.id} type="button" onClick={() => setExecutionDiagramId(item.id)} className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left ${executionDiagramId === item.id ? "border-feedback-info bg-feedback-info-surface" : "border-border bg-muted"}`}>
                         <div>
                           <p className="text-sm font-semibold text-foreground">{item.sectionName || "Fluxo principal"}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">#{item.id} · {item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR") : "-"}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">#{item.id} · {item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE }) : "-"}</p>
                         </div>
                         <Badge className={statusBadge(item.status)}>{statusLabel(item.status)}</Badge>
                       </button>
@@ -305,7 +306,7 @@ export default function WorkflowDetail() {
                         <span className="truncate text-sm font-semibold text-foreground">{item.sectionName || "Fluxo principal"}</span>
                         <span className="font-mono text-xs">#{item.id}</span>
                         <Badge className={`w-fit ${statusBadge(item.status)}`}>{statusLabel(item.status)}</Badge>
-                        <span className="text-xs text-muted-foreground">{item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR") : "-"}</span>
+                        <span className="text-xs text-muted-foreground">{item.startedAt ? new Date(item.startedAt).toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE }) : "-"}</span>
                         <span className="text-xs text-muted-foreground">{item.duration != null ? `${item.duration}s` : "-"}</span>
                         <div className="flex gap-2">
                           <Button variant="outline" size="sm" onClick={() => setExecutionDiagramId(item.id)}>Destacar</Button>
