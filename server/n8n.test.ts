@@ -4,6 +4,7 @@ import { getN8nOverview, isN8nConfigured, summarizeDurations, summarizeTrendComp
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 beforeEach(() => {
@@ -13,6 +14,29 @@ beforeEach(() => {
 });
 
 describe("n8n server integration", () => {
+  it("keeps today's executions and chart on the Brasilia calendar after UTC midnight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-06T02:03:33Z"));
+    vi.stubEnv("TZ", "UTC");
+    vi.stubEnv("N8N_BASE_URL", "https://timezone.example.test");
+    vi.stubEnv("N8N_API_KEY", "timezone-test");
+    const executions = [
+      { id: "late", workflowId: "wf", status: "success", startedAt: "2026-11-06T02:00:00Z" },
+      { id: "daytime", workflowId: "wf", status: "success", startedAt: "2026-11-05T18:00:00Z" },
+      { id: "midnight", workflowId: "wf", status: "success", startedAt: "2026-11-05T03:00:00Z" },
+      { id: "yesterday", workflowId: "wf", status: "success", startedAt: "2026-11-05T02:59:59Z" },
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify({
+      data: String(url).includes("/executions?") ? executions : [{ id: "wf", name: "Test", active: true }],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const today = await getN8nOverview("today");
+    expect(today.metrics?.executions).toBe(3);
+    expect(today.chart).toEqual([expect.objectContaining({ day: "Hoje", total: 3 })]);
+    const week = await getN8nOverview("7d");
+    expect(week.chart.at(-1)).toMatchObject({ day: "Hoje", total: 3 });
+    expect(week.chart.at(-2)).toMatchObject({ day: "04/11", total: 1 });
+  });
+
   it("summarizes durations using the median and p95", () => {
     expect(summarizeDurations([1, 2, 3, 4, 100])).toEqual({ average: 22, p50: 3, p95: 100 });
   });

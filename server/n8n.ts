@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { BRAZIL_TIME_ZONE, brazilDateKey, startOfBrazilDay } from "../shared/timezone.js";
 import { z } from "zod";
 import { archiveConfigured, getArchivedExecution, getArchiveDetailBatch, getArchiveSyncState, listArchivedExecutions, saveArchivedExecution, saveArchivedExecutions, setArchiveSyncState, type ArchivedExecution } from "./firestoreLogs.js";
 import { incidentFingerprint, listIncidentStates, listWorkflowAlertRules, listWorkflowRunbooks, listWorkflowSlos, normalizeErrorSignature } from "./observability.js";
@@ -194,10 +195,8 @@ function errorStatus(error: unknown): Exclude<N8nStatus, "ok" | "not_configured"
 
 function periodStart(period: Period) {
   if (period === "all") return null;
-  const now = new Date();
   if (period === "today") {
-    now.setHours(0, 0, 0, 0);
-    return now.getTime();
+    return startOfBrazilDay().getTime();
   }
   const days = period === "7d" ? 7 : period === "30d" ? 30 : 90;
   return Date.now() - days * 24 * 60 * 60 * 1000;
@@ -1124,15 +1123,14 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
     const inactiveActiveWorkflows = selectedWorkflows.filter((workflow) => workflow.active && (latestExecutionByWorkflow.get(workflow.id) ?? 0) < inactiveBefore).length;
 
     const chartDays = period === "today" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : period === "90d" ? 90 : 30;
+    const today = startOfBrazilDay().getTime();
     const chart = Array.from({ length: chartDays }, (_, index) => {
-      const date = new Date();
-      date.setHours(0, 0, 0, 0);
-      date.setDate(date.getDate() - (chartDays - 1 - index));
-      return { dateKey: date.toISOString().slice(0, 10), day: index === chartDays - 1 ? "Hoje" : date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }), total: 0, sucesso: 0, erro: 0 };
+      const date = new Date(today - (chartDays - 1 - index) * 86_400_000);
+      return { dateKey: brazilDateKey(date), day: index === chartDays - 1 ? "Hoje" : date.toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE, day: "2-digit", month: "2-digit" }), total: 0, sucesso: 0, erro: 0 };
     });
     executions.forEach((item) => {
       if (!item.startedAt) return;
-      const point = chart.find((entry) => entry.dateKey === new Date(item.startedAt as string).toISOString().slice(0, 10));
+      const point = chart.find((entry) => entry.dateKey === brazilDateKey(new Date(item.startedAt as string)));
       if (!point) return;
       point.total += 1;
       if (statusKind(item.status) === "success") point.sucesso += 1;
@@ -1455,7 +1453,7 @@ async function calculateN8nAnalytics(period: Period) {
     const trendMap = new Map<string, { date: string; total: number; success: number; errors: number }>();
     executions.forEach((item) => {
       if (!item.startedAt) return;
-      const date = new Date(item.startedAt).toLocaleDateString("pt-BR");
+      const date = new Date(item.startedAt).toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE });
       const row = trendMap.get(date) ?? { date, total: 0, success: 0, errors: 0 };
       row.total += 1;
       if (statusKind(item.status) === "success") row.success += 1;

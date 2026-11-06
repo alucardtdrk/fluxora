@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { startOfBrazilDay } from "../shared/timezone.js";
 import { isFirestoreConfigured, runFirestoreQuery, setFirestoreDocument, type FirestoreRecord } from "./firestore.js";
 import { getFluxoraCollectionPaths } from "./fluxoraFirestorePaths.js";
 
@@ -81,7 +82,7 @@ export async function listAuditEvents(input: {
   const items: FirestoreRecord[] = [];
   if (!isFirestoreConfigured()) return { items, nextCursor: null, searchIncomplete: false };
   const now = Date.now();
-  const since = input.period === "today" ? new Date(new Date().setHours(0, 0, 0, 0)).getTime()
+  const since = input.period === "today" ? startOfBrazilDay().getTime()
     : input.period === "7d" ? now - 7 * 86_400_000
     : input.period === "30d" ? now - 30 * 86_400_000
     : input.period === "90d" ? now - 90 * 86_400_000

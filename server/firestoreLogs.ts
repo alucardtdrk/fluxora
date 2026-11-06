@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { startOfBrazilDay } from "../shared/timezone.js";
 import {
   commitFirestoreDocuments,
   countFirestoreCollection,
@@ -103,10 +104,8 @@ function readLimit() {
 
 function periodCutoff(period: ArchivePeriod) {
   if (period === "all") return null;
-  const now = new Date();
   if (period === "today") {
-    now.setHours(0, 0, 0, 0);
-    return now.toISOString();
+    return startOfBrazilDay().toISOString();
   }
   const days = period === "7d" ? 7 : period === "30d" ? 30 : 90;
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();

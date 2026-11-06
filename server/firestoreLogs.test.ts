@@ -14,6 +14,17 @@ vi.mock("./firestore.js", () => ({
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.resetAllMocks();
+  vi.useRealTimers();
+});
+
+it("queries today's archive from midnight in Brasilia even after the UTC date changes", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-06T02:03:33Z"));
+  vi.stubEnv("TZ", "UTC");
+  firestore.get.mockResolvedValue({});
+  firestore.query.mockResolvedValue([]);
+  await listArchivedExecutions("today", true);
+  expect(JSON.stringify(firestore.query.mock.calls[0][0])).toContain("2026-11-05T03:00:00.000Z");
 });
 
 it("includes active executions beyond the first Firestore page without treating the archive as truncated", async () => {
