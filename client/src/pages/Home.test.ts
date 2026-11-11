@@ -1,5 +1,6 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { Router } from "wouter";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Home from "./Home";
 import { toast } from "sonner";
@@ -19,7 +20,11 @@ beforeEach(() => {
   queries.workflows = { data: { status: "ok", connected: true, items: [] }, isError: false, refetch: vi.fn() };
 });
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
-const render = () => renderToStaticMarkup(React.createElement(Home));
+const render = () => renderToStaticMarkup(React.createElement(Router, { ssrPath: "/" }, React.createElement(Home)));
+
+it("links the automation health card to analytics without a browser", () => {
+  expect(render()).toContain('href="/analytics"');
+});
 
 it("shows operational attention when executions failed", () => {
   const html = render();
