@@ -1,7 +1,8 @@
 import { BRAZIL_TIME_ZONE } from "@shared/timezone";
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import PeriodFilter from "@/components/PeriodFilter";
-import { CheckCircle2, Clock3, DatabaseZap, Play, RefreshCw, Workflow, XCircle, Zap } from "lucide-react";
+import { BarChart3, CheckCircle2, Clock3, DatabaseZap, Play, RefreshCw, Workflow, XCircle, Zap } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -121,7 +122,31 @@ export default function Home() {
               <Area name="Total" dataKey="total" type="monotone" stroke="var(--feedback-info)" strokeWidth={2} fill="url(#executions-total-gradient)" />
               <Area name="Sucesso" dataKey="sucesso" type="monotone" stroke="var(--feedback-success)" strokeWidth={2} fill="url(#executions-success-gradient)" />
               <Area name="Erros" dataKey="erro" type="monotone" stroke="var(--feedback-error)" strokeWidth={2} fill="url(#executions-error-gradient)" />
-            </AreaChart></ResponsiveContainer> : <div className="grid h-full place-items-center text-sm text-muted-foreground">{initialLoading ? "Carregando telemetria…" : "Sem telemetria."}</div>}</div></CardContent></Card><Card className="border-0 bg-code-background text-code-foreground shadow-sm"><CardContent className="p-6"><p className="text-sm font-semibold">Saúde das automações</p><p className="mt-6 text-6xl font-semibold tracking-[-.07em]">{initialLoading ? "…" : m?.health != null ? `${m.health}%` : "—"}</p><p className="mt-3 text-sm text-code-foreground/80">Indicador consolidado das execuções consultadas.</p>{overview.data?.truncated && <div className="mt-6 rounded-xl bg-card/10 p-3 text-xs text-code-foreground">Histórico limitado por N8N_MAX_PAGES.</div>}</CardContent></Card></div>
+            </AreaChart></ResponsiveContainer> : <div className="grid h-full place-items-center text-sm text-muted-foreground">{initialLoading ? "Carregando telemetria…" : "Sem telemetria."}</div>}</div></CardContent></Card><Card className="group relative overflow-hidden border-0 bg-card shadow-sm">
+        <div aria-hidden="true" className="pointer-events-none absolute -top-24 left-1/2 h-64 w-64 -translate-x-1/2 rounded-full bg-primary/10 blur-3xl transition-colors duration-700 group-hover:bg-primary/15" />
+        <CardContent className="relative flex h-full flex-col p-6">
+          <div className="flex items-center gap-3 border-b pb-5">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><BarChart3 className="h-5 w-5" /></div>
+            <div><h3 className="text-base font-semibold">Saúde das automações</h3><p className="mt-1 text-xs text-muted-foreground">{periods.find(([value]) => value === period)?.[1]} · {focusIds.length ? "Workflows em foco" : "Todos os workflows"}</p></div>
+          </div>
+          <div className="mt-5 grid grid-cols-2 divide-x">
+            <div className="pr-4"><p className="text-xs font-medium text-muted-foreground">Execuções</p>{initialLoading ? <MetricSkeleton /> : <p className="mt-2 text-3xl font-semibold tracking-tight">{m ? total.toLocaleString("pt-BR") : "—"}</p>}<p className="mt-1 text-xs text-muted-foreground">no período selecionado</p></div>
+            <div className="pl-4"><p className="text-xs font-medium text-muted-foreground">Taxa de sucesso</p>{initialLoading ? <MetricSkeleton /> : <p className="mt-2 text-3xl font-semibold tracking-tight">{m?.successRate != null ? `${m.successRate}%` : "—"}</p>}<p className="mt-1 text-xs text-muted-foreground">Saúde consolidada: {m?.health != null ? `${m.health}%` : "—"}</p></div>
+          </div>
+          <div className="my-5 flex-1" aria-label="Evolução do total de execuções no período selecionado">
+            <div className="h-[130px]">{(overview.data?.chart?.length ?? 0) > 0 ? <ResponsiveContainer width="100%" height="100%">
+              <AreaChart accessibilityLayer data={overview.data?.chart} margin={{ top: 16, right: 12, bottom: 8, left: 12 }}>
+                <defs><linearGradient id="health-executions-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--primary)" stopOpacity={0.25} /><stop offset="100%" stopColor="var(--primary)" stopOpacity={0} /></linearGradient></defs>
+                <XAxis dataKey="day" hide />
+                <Tooltip cursor={false} contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--foreground)" }} formatter={(value) => [Number(value).toLocaleString("pt-BR"), "Execuções"]} />
+                <Area name="Execuções" dataKey="total" type="monotone" stroke="var(--primary)" strokeWidth={2.5} fill="url(#health-executions-gradient)" isAnimationActive={false} activeDot={{ r: 5 }} dot={({ cx, cy, index }: { cx?: number; cy?: number; index?: number }) => <g>{index === (overview.data?.chart?.length ?? 0) - 1 && <><circle cx={cx} cy={cy} r={10} fill="var(--primary)" opacity={0.15} /><circle cx={cx} cy={cy} r={5} fill="var(--primary)" /></>}</g>} />
+              </AreaChart>
+            </ResponsiveContainer> : <div className="grid h-full place-items-center text-sm text-muted-foreground">{initialLoading ? "Carregando telemetria…" : "Sem telemetria."}</div>}</div>
+          </div>
+          {overview.data?.truncated && <p className="mb-4 text-xs text-muted-foreground">Histórico limitado por N8N_MAX_PAGES.</p>}
+          <div className="border-t pt-5"><Button asChild variant="outline" className="h-11 w-full rounded-xl border-primary/50 text-primary hover:bg-primary hover:text-primary-foreground"><Link href="/analytics">Ver análise completa</Link></Button></div>
+        </CardContent>
+      </Card></div>
 
     <div className="mt-6 grid gap-6 xl:grid-cols-2">
       <Card className="border-0 bg-card shadow-sm"><CardHeader><CardTitle className="text-base">Distribuição por status</CardTitle><p className="text-xs text-muted-foreground">Composição das execuções consultadas no período.</p></CardHeader><CardContent><div className="grid gap-6 md:grid-cols-[1.2fr_.8fr] md:items-center"><div><div className="flex h-12 overflow-hidden rounded-full bg-muted">{total > 0 && <><div className="bg-primary" style={{ width: `${(success / total) * 100}%` }} /><div className="bg-feedback-error" style={{ width: `${(errorCount / total) * 100}%` }} /><div className="bg-feedback-info" style={{ width: `${(running / total) * 100}%` }} /><div className="bg-muted-foreground" style={{ width: `${(waiting / total) * 100}%` }} /><div className="bg-secondary-foreground" style={{ width: `${(canceled / total) * 100}%` }} /></>}</div><div className="mt-5 flex justify-between text-xs text-muted-foreground"><span>{m ? `${successPct}% sucesso` : "—"}</span><span>{m ? `${total} execuções` : "—"}</span></div></div><div className="space-y-3 text-sm text-muted-foreground"><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-primary"/>Sucesso</span><b>{m ? `${successPct}%` : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-feedback-error"/>Falhas</span><b>{m ? errorCount : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-feedback-info"/>Em andamento</span><b>{m ? running : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-muted-foreground"/>Aguardando</span><b>{m ? waiting : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-secondary-foreground"/>Canceladas</span><b>{m ? canceled : "—"}</b></div></div></div></CardContent></Card>
