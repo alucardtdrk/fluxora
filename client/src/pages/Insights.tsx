@@ -111,8 +111,8 @@ function AnalyticsPage() {
 
           <div className="mt-6 grid gap-6 xl:grid-cols-[1.5fr_1fr]">
             <Card className="border-0 bg-card shadow-sm">
-              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><BarChart3 className="h-4 w-4 text-feedback-info" />Tendência de execuções</CardTitle></CardHeader>
-              <CardContent><div className="h-[300px]">{(dashboard?.trend?.length ?? 0) > 0 ? <ResponsiveContainer width="100%" height="100%"><AreaChart accessibilityLayer data={[...(dashboard?.trend ?? [])].reverse()} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><BarChart3 className="h-4 w-4 text-feedback-info" />Tendência de execuções</CardTitle>{period.startsWith("custom:") && <p className="text-xs text-muted-foreground">Até 90 dias: diário. Até um ano: semanal. Acima de um ano: mensal. Cada ponto indica o intervalo somado.</p>}</CardHeader>
+              <CardContent><div className="h-[300px]">{(dashboard?.trend?.length ?? 0) > 0 ? <ResponsiveContainer width="100%" height="100%"><AreaChart accessibilityLayer data={period.startsWith("custom:") ? dashboard?.trend : [...(dashboard?.trend ?? [])].reverse()} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="analytics-total-gradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="var(--feedback-info)" stopOpacity={0.18} />
@@ -134,7 +134,7 @@ function AnalyticsPage() {
               <Area name="Total" dataKey="total" type="monotone" stroke="var(--feedback-info)" strokeWidth={2} fill="url(#analytics-total-gradient)" />
               <Area name="Sucesso" dataKey="success" type="monotone" stroke="var(--feedback-success)" strokeWidth={2} fill="url(#analytics-success-gradient)" />
               <Area name="Erros" dataKey="errors" type="monotone" stroke="var(--feedback-error)" strokeWidth={2} fill="url(#analytics-error-gradient)" />
-            </AreaChart></ResponsiveContainer> : <Empty text={initialLoading ? "Carregando telemetria..." : "Sem dados no período"} />}</div></CardContent>
+            </AreaChart></ResponsiveContainer> : <Empty text={initialLoading ? "Carregando telemetria..." : dashboard?.truncated && period.startsWith("custom:") ? "Consulta incompleta. O gráfico será exibido quando todo o período estiver disponível." : "Sem dados no período"} />}</div></CardContent>
             </Card>
             <Card className="overflow-hidden border border-violet-500/20 bg-card shadow-sm">
               <CardHeader className="pb-0">

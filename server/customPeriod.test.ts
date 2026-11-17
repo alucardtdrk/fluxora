@@ -35,3 +35,49 @@ it("filters overview, analytics, errors and executions at both date boundaries",
   const page = await listN8nExecutionsPage({ period, page: 1, pageSize: 10 });
   expect(page.items.map(item => item.id).sort()).toEqual(["1", "2"]);
 });
+
+async function customCharts(period: `custom:${string}:${string}`, times: string[], incomplete = false) {
+  vi.stubEnv("FIREBASE_PROJECT_ID", "");
+  vi.stubEnv("FIREBASE_CLIENT_EMAIL", "");
+  vi.stubEnv("FIREBASE_PRIVATE_KEY", "");
+  vi.stubEnv("N8N_BASE_URL", "https://custom-chart.example.test");
+  vi.stubEnv("N8N_API_KEY", "test-only");
+  vi.stubEnv("N8N_MAX_PAGES", "1");
+  invalidateN8nCache();
+  vi.stubGlobal("fetch", vi.fn(async url => Response.json(String(url).includes("/workflows")
+    ? { data: [{ id: "wf", name: "Workflow", active: true }] }
+    : { data: times.map((startedAt, index) => ({ id: String(index), workflowId: "wf", status: index % 2 ? "error" : "success", startedAt })), ...(incomplete ? { nextCursor: "more" } : {}) })));
+  return { overview: await getN8nOverview(period), analytics: await getN8nAnalytics(period) };
+}
+
+it("fills intermediate custom dates and keeps both charts chronological", async () => {
+  const { overview, analytics } = await customCharts("custom:2026-11-01:2026-11-04", ["2026-11-04T03:00:00Z", "2026-11-01T03:00:00Z"]);
+  expect(overview.chart.map(row => row.total)).toEqual([1, 0, 0, 1]);
+  expect(analytics.trend.map(row => row.total)).toEqual([1, 0, 0, 1]);
+  expect(analytics.trend.map(row => row.date)).toEqual(["01/11/2026", "02/11/2026", "03/11/2026", "04/11/2026"]);
+});
+it("includes an entirely empty custom range", async () => {
+  const { overview, analytics } = await customCharts("custom:2026-11-01:2026-11-03", []);
+  expect(overview.chart.map(row => row.total)).toEqual([0, 0, 0]);
+  expect(analytics.trend.map(row => row.total)).toEqual([0, 0, 0]);
+});
+it("groups long ranges weekly, retaining partial last weeks and exact totals", async () => {
+  const { overview, analytics } = await customCharts("custom:2026-01-01:2026-04-02", ["2026-01-01T03:00:00Z", "2026-01-07T03:00:00Z", "2026-04-02T03:00:00Z"]);
+  expect(overview.chart).toHaveLength(14);
+  expect(overview.chart[0]).toMatchObject({ day: "01/01/2026 a 07/01/2026", total: 2, sucesso: 1, erro: 1 });
+  expect(analytics.trend.at(-1)).toMatchObject({ date: "02/04/2026 a 02/04/2026", total: 1 });
+  expect(analytics.trend.reduce((sum, row) => sum + row.total, 0)).toBe(3);
+});
+it("groups very long ranges monthly across years and leap days", async () => {
+  const { overview, analytics } = await customCharts("custom:2024-02-28:2025-03-02", ["2024-02-29T03:00:00Z", "2025-03-02T03:00:00Z"]);
+  expect(overview.chart).toHaveLength(14);
+  expect(analytics.trend[0]).toMatchObject({ date: "28/02/2024 a 29/02/2024", total: 1 });
+  expect(analytics.trend.at(-1)).toMatchObject({ date: "01/03/2025 a 02/03/2025", total: 1 });
+});
+it("does not invent zeroes when the custom query is incomplete", async () => {
+  const { overview, analytics } = await customCharts("custom:2026-11-01:2026-11-03", ["2026-11-03T03:00:00Z"], true);
+  expect(overview.truncated).toBe(true);
+  expect(overview.chart).toEqual([]);
+  expect(analytics.trend).toEqual([]);
+  expect(analytics.comparison).toBeNull();
+});

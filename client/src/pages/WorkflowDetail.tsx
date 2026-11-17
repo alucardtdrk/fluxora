@@ -76,6 +76,7 @@ export default function WorkflowDetail() {
   } : null);
   const historyConfigured = Boolean(workflowDetail.data?.historyConfigured);
   const changes = workflowDetail.data?.changes ?? [];
+  const pendingHistory = workflowDetail.data && "historyPending" in workflowDetail.data ? workflowDetail.data.historyPending : 0;
   const advancedDetailAvailable = workflowDetail.data?.status === "ok";
   const history = useMemo(() => (executions.data?.items ?? []).filter((item) => item.workflowId === id), [executions.data, id]);
   const success = history.filter((item) => item.status === "success").length;
@@ -129,8 +130,16 @@ export default function WorkflowDetail() {
   const refreshing = workflowDetail.isFetching || executions.isFetching || executionDetail.isFetching;
 
   const refreshAll = async () => {
-    await Promise.all([workflowDetail.refetch(), executions.refetch(), executionDiagramId ? executionDetail.refetch() : Promise.resolve()]);
-    toast.success("Workflow atualizado");
+    try {
+      const results = await Promise.all([workflowDetail.refetch(), executions.refetch(), executionDiagramId ? executionDetail.refetch() : Promise.resolve(null)]);
+      if (results.some(result => result && (result.error || result.data?.status !== "ok"))) {
+        toast.error("Não foi possível atualizar todos os dados do workflow", { description: "Os dados anteriores podem estar desatualizados. Tente novamente em instantes." });
+        return;
+      }
+      toast.success("Workflow atualizado");
+    } catch {
+      toast.error("Não foi possível atualizar o workflow", { description: "Verifique sua conexão e tente novamente." });
+    }
   };
 
   const toggle = () => {
@@ -249,8 +258,8 @@ export default function WorkflowDetail() {
             </TabsContent>
 
             <TabsContent value="executions" className="mt-6 space-y-6">
-              {advancedDetailAvailable ? <div className="grid items-start gap-6 xl:grid-cols-[1.4fr_.8fr]">
-                <WorkflowDiagram nodes={workflow.nodes} connections={workflow.connections} selectedNodeName={selectedNodeName} onSelectNode={setSelectedNodeName} executionNodeStatuses={executionNodeStatuses} />
+              {advancedDetailAvailable ? <div className="grid items-stretch gap-6 xl:grid-cols-[1.4fr_.8fr]">
+                <WorkflowDiagram className="xl:flex xl:h-full xl:flex-col" nodes={workflow.nodes} connections={workflow.connections} selectedNodeName={selectedNodeName} onSelectNode={setSelectedNodeName} executionNodeStatuses={executionNodeStatuses} />
                 <div className="space-y-6">
                 <Card className="border-0 bg-card shadow-sm">
                   <CardHeader>
@@ -331,6 +340,7 @@ export default function WorkflowDetail() {
             </TabsContent>
 
             <TabsContent value="changes" className="mt-6">
+              {pendingHistory !== 0 && <p role="status" className="mb-4 rounded-xl border border-feedback-error-border bg-feedback-error-surface p-4 text-sm text-feedback-error">{pendingHistory == null ? "Não foi possível verificar as pendências do histórico. Atualize para tentar novamente." : "Há registros pendentes de confirmação no histórico. A recuperação é tentada ao atualizar este workflow; alterações posteriores no n8n podem exigir conferência. Não repita a alteração para recuperar o registro."}</p>}
               {!advancedDetailAvailable ? null : <WorkflowChangeHistory
                 changes={changes}
                 canRestore={canRestore}

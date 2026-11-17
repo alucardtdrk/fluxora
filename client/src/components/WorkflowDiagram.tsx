@@ -21,6 +21,7 @@ type DiagramNode = {
 };
 
 type DiagramProps = {
+  className?: string;
   nodes: DiagramNode[];
   connections: Record<string, unknown>;
   selectedNodeName: string | null;
@@ -52,7 +53,7 @@ function buildEdges(connections: Record<string, unknown>) {
   return edges;
 }
 
-export default function WorkflowDiagram({ nodes, connections, selectedNodeName, onSelectNode, executionNodeStatuses }: DiagramProps) {
+export default function WorkflowDiagram({ nodes, connections, selectedNodeName, onSelectNode, executionNodeStatuses, className = "" }: DiagramProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState("");
   const [zoom, setZoom] = useState(1);
@@ -123,8 +124,8 @@ export default function WorkflowDiagram({ nodes, connections, selectedNodeName, 
   const contentHeight = Math.max(viewportHeight, layout.height + 40);
 
   return (
-    <div className="rounded-[28px] border border-border bg-card shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-border px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+    <div className={`rounded-[28px] border border-border bg-card shadow-sm ${className}`}>
+      <div className="flex shrink-0 flex-col gap-3 border-b border-border px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="text-sm font-semibold text-foreground">Diagrama operacional</p>
           <p className="mt-1 text-xs text-muted-foreground">Layout real do n8n com busca, zoom, navegacao e selecao de nodes.</p>
@@ -142,7 +143,7 @@ export default function WorkflowDiagram({ nodes, connections, selectedNodeName, 
 
       <div
         ref={viewportRef}
-        className={`relative max-md:max-h-[65dvh] overflow-hidden rounded-b-[28px] bg-background select-none ${dragStart ? "cursor-grabbing" : "cursor-grab"}`}
+        className={`relative flex-1 max-md:max-h-[65dvh] overflow-hidden rounded-b-[28px] bg-background select-none ${dragStart ? "cursor-grabbing" : "cursor-grab"}`}
         style={{ height: viewportHeight, minHeight: 320, touchAction: "none" }}
         onPointerDown={(event) => {
           if (!event.isPrimary || event.button !== 0 || (event.target as HTMLElement)?.closest("button")) return;

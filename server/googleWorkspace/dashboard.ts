@@ -211,7 +211,7 @@ export function createWorkspaceSecurityDashboard(dependencies: DashboardDependen
     async load(): Promise<WorkspaceSecurityDashboard> {
       const [records, findingRecords, posture, sourceRecords] = await Promise.all([dependencies.listEvents(), dependencies.listFindings(), dependencies.getPosture(), dependencies.listSources?.() ?? []]);
       const events = records.map(dashboardEvent).filter((event) => Boolean(event.id));
-      const findings = findingRecords.map(dashboardFinding).filter((finding): finding is WorkspaceDashboardFinding => Boolean(finding));
+      const findings = findingRecords.filter(isActiveFinding).map(dashboardFinding).filter((finding): finding is WorkspaceDashboardFinding => Boolean(finding));
       const sources = sourceRecords.map((record) => ({ source: String(record.source || record._documentId || "unknown"), status: String(record.lastStatus || "unknown"), received: Number(record.lastReceived ?? record.lastCollected ?? 0), collected: Number(record.lastCollected || 0), persisted: Number(record.lastPersisted || 0), httpStatus: record.lastHttpStatus ? Number(record.lastHttpStatus) : undefined, completedAt: record.lastCompletedAt ? dateValue(record.lastCompletedAt) : undefined, safeError: stringValue(record.lastSafeError), backfillPagesProcessed: Number(record.backfillPagesProcessed || 0), ...coverage(record) }));
       return {
         events,
@@ -234,8 +234,29 @@ async function listWorkspaceSourceStates(): Promise<readonly FirestoreRecord[]> 
   return runFirestoreQuery({ from: [{ collectionId: WORKSPACE_SYNC_STATE_COLLECTION }], limit: 20 });
 }
 
+function isActiveFinding(record: FirestoreRecord) {
+  return record.expiresAt == null || new Date(record.expiresAt as string).getTime() > Date.now();
+}
+
 async function listWorkspaceFindings(): Promise<readonly FirestoreRecord[]> {
-  return runFirestoreQuery({ from: [{ collectionId: WORKSPACE_SECURITY_FINDINGS_COLLECTION }], orderBy: [{ field: { fieldPath: "lastOccurredAt" }, direction: "DESCENDING" }], limit: 100 });
+  const findings: FirestoreRecord[] = [];
+  let cursor: { lastOccurredAt: string; documentName: string } | null = null;
+  let previousDocumentName = "";
+  while (findings.length < 100) {
+    const records = await runFirestoreQuery({
+      from: [{ collectionId: WORKSPACE_SECURITY_FINDINGS_COLLECTION }],
+      orderBy: ["lastOccurredAt", "__name__"].map(fieldPath => ({ field: { fieldPath }, direction: "DESCENDING" })),
+      ...(cursor ? { startAt: { before: false, values: [{ timestampValue: cursor.lastOccurredAt }, { referenceValue: cursor.documentName }] } } : {}),
+      limit: 100,
+    });
+    findings.push(...records.filter(isActiveFinding));
+    if (records.length < 100) break;
+    const last = records.at(-1)!;
+    if (typeof last._documentName !== "string" || last._documentName === previousDocumentName) throw new Error("WORKSPACE_FINDINGS_CURSOR_INVALID");
+    previousDocumentName = last._documentName;
+    cursor = { lastOccurredAt: dateValue(last.lastOccurredAt), documentName: last._documentName };
+  }
+  return findings.slice(0, 100);
 }
 
 async function listWorkspaceEvents(): Promise<readonly FirestoreRecord[]> {

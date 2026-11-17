@@ -174,13 +174,25 @@ export function createGoogleWorkspaceRepository(
     },
 
     async listRecentEvents(since: Date): Promise<readonly WorkspaceSecurityEvent[]> {
-      const records = await runFirestoreQuery({
-        from: [{ collectionId: WORKSPACE_SECURITY_EVENTS_COLLECTION }],
-        where: { fieldFilter: { field: { fieldPath: "occurredAt" }, op: "GREATER_THAN_OR_EQUAL", value: { timestampValue: since.toISOString() } } },
-        orderBy: [{ field: { fieldPath: "occurredAt" }, direction: "ASCENDING" }],
-        limit: 1000,
-      });
-      return records.map(asRecentEvent).filter((event): event is WorkspaceSecurityEvent => Boolean(event));
+      const events: WorkspaceSecurityEvent[] = [];
+      let cursor: { occurredAt: string; documentName: string } | null = null;
+      let previousDocumentName = "";
+      while (true) {
+        const records = await runFirestoreQuery({
+          from: [{ collectionId: WORKSPACE_SECURITY_EVENTS_COLLECTION }],
+          where: { fieldFilter: { field: { fieldPath: "occurredAt" }, op: "GREATER_THAN_OR_EQUAL", value: { timestampValue: since.toISOString() } } },
+          orderBy: ["occurredAt", "__name__"].map(fieldPath => ({ field: { fieldPath }, direction: "ASCENDING" })),
+          ...(cursor ? { startAt: { before: false, values: [{ timestampValue: cursor.occurredAt }, { referenceValue: cursor.documentName }] } } : {}),
+          limit: 1000,
+        });
+        events.push(...records.map(asRecentEvent).filter((event): event is WorkspaceSecurityEvent => Boolean(event)));
+        if (records.length < 1000) return events;
+        const last = records.at(-1)!;
+        const occurredAt = new Date(last.occurredAt as string).toISOString();
+        if (typeof last._documentName !== "string" || last._documentName === previousDocumentName) throw new Error("WORKSPACE_CORRELATION_CURSOR_INVALID");
+        previousDocumentName = last._documentName;
+        cursor = { occurredAt, documentName: last._documentName };
+      }
     },
   };
 }
@@ -188,7 +200,7 @@ export function createGoogleWorkspaceRepository(
 export const googleWorkspaceRepository = createGoogleWorkspaceRepository();
 
 export async function pruneExpiredWorkspaceEvents(now = new Date()): Promise<number> {
-  return removeExpiredWorkspaceEvents({
+  const removed = await removeExpiredWorkspaceEvents({
     listExpired: async () => (await runFirestoreQuery({
       select: { fields: [{ fieldPath: "expiresAt" }] },
       from: [{ collectionId: WORKSPACE_SECURITY_EVENTS_COLLECTION }],
@@ -197,4 +209,14 @@ export async function pruneExpiredWorkspaceEvents(now = new Date()): Promise<num
     })).map((record) => String(record._documentId || record.id || "")).filter(Boolean),
     deleteEvent: async (id) => { await deleteFirestoreDocument(WORKSPACE_SECURITY_EVENTS_COLLECTION, id); },
   });
+  await removeExpiredWorkspaceEvents({
+    listExpired: async () => (await runFirestoreQuery({
+      select: { fields: [{ fieldPath: "expiresAt" }] },
+      from: [{ collectionId: WORKSPACE_SECURITY_FINDINGS_COLLECTION }],
+      where: { fieldFilter: { field: { fieldPath: "expiresAt" }, op: "LESS_THAN_OR_EQUAL", value: { timestampValue: now.toISOString() } } },
+      limit: 200,
+    })).map(record => String(record._documentId || record.id || "")).filter(Boolean),
+    deleteEvent: async id => { await deleteFirestoreDocument(WORKSPACE_SECURITY_FINDINGS_COLLECTION, id); },
+  });
+  return removed;
 }
