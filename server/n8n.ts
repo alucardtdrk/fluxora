@@ -968,7 +968,7 @@ async function loadConsolidatedExecutions(backfillComplete: boolean, period: Per
   const archive = await loadArchivedExecutions(period, true);
   const live = await loadLiveExecutions(livePeriod).catch((error) => {
     console.error("n8n live executions unavailable; using Firestore archive", { error: error instanceof Error ? error.name : "unknown" });
-    return { items: [] as N8nExecution[], truncated: false };
+    return { items: [] as N8nExecution[], truncated: true };
   });
   const items = mergeExecutions(archive.items as N8nExecution[], live.items);
   console.info("Fluxora consolidated executions loaded", {
@@ -1063,6 +1063,40 @@ export function summarizeDurations(durations: number[]) {
 
 type TrendSummaryPoint = { total: number; success: number; errors: number };
 
+function customExecutionTrend(period: Period, executions: N8nExecution[], incomplete: boolean) {
+  const bounds = customPeriodBounds(period);
+  if (!bounds) return null;
+  if (incomplete) return [];
+  const day = 86_400_000;
+  const days = (bounds.end - bounds.start) / day;
+  const monthly = days > 366;
+  const step = days > 90 ? 7 : 1;
+  const label = (time: number) => new Date(time).toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE });
+  const rows: { date: string; total: number; success: number; errors: number }[] = [];
+  const monthIndices = new Map<string, number>();
+  for (let start = bounds.start; start < bounds.end;) {
+    const key = brazilDateKey(new Date(start));
+    const nextMonth = new Date(start);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1, 1);
+    const end = Math.min(bounds.end, monthly ? nextMonth.getTime() : start + step * day);
+    monthIndices.set(key.slice(0, 7), rows.length);
+    rows.push({ date: days <= 90 ? label(start) : `${label(start)} a ${label(end - day)}`, total: 0, success: 0, errors: 0 });
+    start = end;
+  }
+  for (const item of executions) {
+    if (!item.startedAt) continue;
+    const time = Date.parse(item.startedAt);
+    if (!Number.isFinite(time) || time < bounds.start || time >= bounds.end) continue;
+    const index = monthly ? monthIndices.get(brazilDateKey(new Date(time)).slice(0, 7)) : Math.floor((time - bounds.start) / (step * day));
+    const row = index === undefined ? undefined : rows[index];
+    if (!row) continue;
+    row.total++;
+    if (statusKind(item.status) === "success") row.success++;
+    if (statusKind(item.status) === "error") row.errors++;
+  }
+  return rows;
+}
+
 export function summarizeTrendComparison(rows: TrendSummaryPoint[]) {
   if (rows.length < 2) return null;
   const midpoint = Math.ceil(rows.length / 2);
@@ -1129,9 +1163,7 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
     const chartDays = period === "today" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : period === "90d" ? 90 : 30;
     const today = startOfBrazilDay().getTime();
     const custom = customPeriodBounds(period);
-    const dates = custom
-      ? [...new Set([custom.startDate, custom.endDate, ...executions.flatMap(item => item.startedAt ? [brazilDateKey(new Date(item.startedAt))] : [])])].sort().map(date => new Date(`${date}T00:00:00-03:00`))
-      : Array.from({ length: chartDays }, (_, index) => new Date(today - (chartDays - 1 - index) * 86_400_000));
+    const dates = Array.from({ length: chartDays }, (_, index) => new Date(today - (chartDays - 1 - index) * 86_400_000));
     const chart = dates.map((date, index) => {
       return { dateKey: brazilDateKey(date), day: !custom && index === chartDays - 1 ? "Hoje" : date.toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE, day: "2-digit", month: "2-digit" }), total: 0, sucesso: 0, erro: 0 };
     });
@@ -1165,7 +1197,7 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
         inactiveActiveWorkflows,
         inactiveHours: inactiveHoursLimit,
       },
-      chart: chart.map(({ dateKey, ...point }) => point),
+      chart: customExecutionTrend(period, executions, executionPage.truncated)?.map(row => ({ day: row.date.includes(" a ") ? row.date : row.date.slice(0, 5), total: row.total, sucesso: row.success, erro: row.errors })) ?? chart.map(({ dateKey, ...point }) => point),
       workflowStats: aggregate(selectedWorkflows, executions),
       truncated: executionPage.truncated,
     };
@@ -1505,7 +1537,7 @@ async function calculateN8nAnalytics(period: Period) {
       const workflowTotalMs = workflowNodeTime.get(row.workflowId) || 0;
       return { workflowId: row.workflowId, workflowName: row.workflowName, nodeName: row.nodeName, runs: row.runs, errors: row.errors, errorRate: Number(((row.errors / row.runs) * 100).toFixed(1)), averageMs: duration.average, p50Ms: duration.p50, p95Ms: duration.p95, totalMs, workflowTimeShare: workflowTotalMs ? Number(((totalMs / workflowTotalMs) * 100).toFixed(1)) : 0, outputItems: row.outputItems };
     }).sort((a, b) => b.errors - a.errors || Number(b.p95Ms || 0) - Number(a.p95Ms || 0));
-    const trend = Array.from(trendMap.values()).reverse();
+    const trend = customExecutionTrend(period, executions, executionPage.truncated) ?? Array.from(trendMap.values()).reverse();
     const configuredAlerts = stats.filter((item) => item.alertRule?.enabled);
     return {
       status: "ok" as const,

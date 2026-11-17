@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { withFirestoreLease } from "./firestore.js";
-import { getWorkflowSnapshot, listWorkflowChanges, saveWorkflowChange, saveWorkflowSnapshot, workflowHistoryConfigured } from "./workflowChanges.js";
+import { getWorkflowSnapshot, listWorkflowChanges, queueWorkflowChange, finishWorkflowChange, recoverWorkflowChanges, workflowContentDigest, saveWorkflowSnapshot, workflowHistoryConfigured } from "./workflowChanges.js";
 
 const SENSITIVE_KEYWORDS = [
   "password",
@@ -426,8 +426,9 @@ export async function getN8nWorkflowDetail(workflowId: string) {
   if (!getConfig()) return { status: "not_configured" as const, connected: false as const, historyConfigured: workflowHistoryConfigured(), workflow: null, editorUrl: null, changes: [] };
   try {
     const workflow = await fetchWorkflow(workflowId);
+    const recovery = await recoverWorkflowChanges(workflowId, workflowContentDigest(workflow), workflowRevision(workflow)).catch(() => ({ recovered: 0, pending: null }));
     const changes = await listWorkflowChanges(workflowId).catch(() => []);
-    return { status: "ok" as const, connected: true as const, historyConfigured: workflowHistoryConfigured(), workflow: normalizeWorkflow(workflow), editorUrl: editorUrlForWorkflow(workflowId), changes };
+    return { status: "ok" as const, connected: true as const, historyConfigured: workflowHistoryConfigured(), historyPending: recovery.pending, workflow: normalizeWorkflow(workflow), editorUrl: editorUrlForWorkflow(workflowId), changes };
   } catch (error) {
     const status = error instanceof Error && error.message === "N8N_UNAUTHORIZED" ? "unauthorized" : "api_error";
     return { status, connected: false as const, historyConfigured: workflowHistoryConfigured(), workflow: null, editorUrl: null, changes: [] };
@@ -444,6 +445,7 @@ export async function updateN8nWorkflowNode(input: z.infer<typeof updateWorkflow
     return await withFirestoreLease(`workflow-${parsed.workflowId}`, async assertActive => {
       const currentWorkflow = await fetchWorkflow(parsed.workflowId);
       if (workflowRevision(currentWorkflow) !== parsed.expectedVersion) return conflictResult;
+      await recoverWorkflowChanges(parsed.workflowId, workflowContentDigest(currentWorkflow), workflowRevision(currentWorkflow));
       const nodes = Array.isArray(currentWorkflow.nodes) ? [...currentWorkflow.nodes] : [];
       const index = nodes.findIndex((node) => String(node.name || "") === parsed.nodeName);
       if (index < 0) return { status: "api_error" as const, connected: true as const, message: "Node nao encontrado no workflow." };
@@ -482,9 +484,8 @@ export async function updateN8nWorkflowNode(input: z.infer<typeof updateWorkflow
 
       // shortcut: direct n8n edits can race this check; use conditional writes when its public API supports them.
       if (workflowRevision(await fetchWorkflow(parsed.workflowId)) !== parsed.expectedVersion) return conflictResult;
-      assertActive();
-      const updatedWorkflow = await pushWorkflow(parsed.workflowId, { ...currentWorkflow, nodes });
-      const change = await saveWorkflowChange({
+      const targetWorkflow = { ...currentWorkflow, nodes };
+      const pendingChange = await queueWorkflowChange({
         workflowId: parsed.workflowId,
         workflowName: String(currentWorkflow.name || "Workflow"),
         actor: actor.email,
@@ -494,7 +495,10 @@ export async function updateN8nWorkflowNode(input: z.infer<typeof updateWorkflow
         nodeNames: [parsed.nodeName],
         snapshotId: snapshot.id,
         restoredFromSnapshotId: null,
-      }).catch(() => null);
+      }, workflowContentDigest(targetWorkflow), parsed.expectedVersion);
+      assertActive();
+      const updatedWorkflow = await pushWorkflow(parsed.workflowId, targetWorkflow);
+      const change = await finishWorkflowChange(pendingChange).catch(() => null);
 
       return { status: "ok" as const, connected: true as const, workflow: normalizeWorkflow(updatedWorkflow), snapshotId: snapshot.id, change, historyPending: !change };
     });
@@ -522,6 +526,7 @@ export async function restoreN8nWorkflowVersion(workflowId: string, snapshotId: 
     return await withFirestoreLease(`workflow-${workflowId}`, async assertActive => {
       const [currentWorkflow, snapshot] = await Promise.all([fetchWorkflow(workflowId), getWorkflowSnapshot(snapshotId)]);
       if (workflowRevision(currentWorkflow) !== expectedVersion) return conflictResult;
+      await recoverWorkflowChanges(workflowId, workflowContentDigest(currentWorkflow), workflowRevision(currentWorkflow));
       if (!snapshot || snapshot.workflowId !== workflowId) return { status: "api_error" as const, connected: true as const, message: "Snapshot nao encontrado para este workflow." };
 
       const beforeRestoreSnapshot = await saveWorkflowSnapshot({
@@ -535,12 +540,10 @@ export async function restoreN8nWorkflowVersion(workflowId: string, snapshotId: 
 
       // shortcut: direct n8n edits can race this check; use conditional writes when its public API supports them.
       if (workflowRevision(await fetchWorkflow(workflowId)) !== expectedVersion) return conflictResult;
-      assertActive();
-      const restoredWorkflow = await pushWorkflow(workflowId, snapshot.workflow as WorkflowRecord);
       const restoredNodes = (snapshot.workflow as WorkflowRecord).nodes ?? [];
-      const change = await saveWorkflowChange({
+      const pendingChange = await queueWorkflowChange({
         workflowId,
-        workflowName: String(restoredWorkflow.name || currentWorkflow.name || "Workflow"),
+        workflowName: String(snapshot.workflow.name || currentWorkflow.name || "Workflow"),
         actor: actor.email,
         actorRole: actor.role,
         type: "restore",
@@ -548,7 +551,10 @@ export async function restoreN8nWorkflowVersion(workflowId: string, snapshotId: 
         nodeNames: restoredNodes.map((node) => String(node.name || "")).filter(Boolean),
         snapshotId: beforeRestoreSnapshot.id,
         restoredFromSnapshotId: snapshot.id,
-      }).catch(() => null);
+      }, workflowContentDigest(snapshot.workflow), expectedVersion);
+      assertActive();
+      const restoredWorkflow = await pushWorkflow(workflowId, snapshot.workflow as WorkflowRecord);
+      const change = await finishWorkflowChange(pendingChange).catch(() => null);
 
       return { status: "ok" as const, connected: true as const, workflow: normalizeWorkflow(restoredWorkflow), change, historyPending: !change };
     });

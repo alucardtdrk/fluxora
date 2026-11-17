@@ -4,7 +4,10 @@ import { getN8nWorkflowDetail, updateN8nWorkflowNode, restoreN8nWorkflowVersion 
 const history = vi.hoisted(() => ({
   workflowHistoryConfigured: vi.fn(() => true), listWorkflowChanges: vi.fn(async () => []),
   saveWorkflowSnapshot: vi.fn(async () => ({ id: "snapshot" })),
-  saveWorkflowChange: vi.fn(async () => ({ id: "change" })),
+  finishWorkflowChange: vi.fn(async () => ({ id: "change" })),
+  queueWorkflowChange: vi.fn(async input => ({ ...input, id: "pending" })),
+  recoverWorkflowChanges: vi.fn(async () => ({ recovered: 0, pending: 0 })),
+  workflowContentDigest: vi.fn(() => "digest"),
   getWorkflowSnapshot: vi.fn(async () => ({ workflowId: "w1", createdAt: "today", workflow: { id: "w1", nodes: [] } })),
 }));
 vi.mock("./workflowChanges.js", () => history);
@@ -19,7 +22,7 @@ beforeEach(() => {
   vi.stubEnv("CONTROL_ACTIONS_ENABLED", "true");
   current = structuredClone(original);
   vi.clearAllMocks();
-  history.saveWorkflowChange.mockResolvedValue({ id: "change" });
+  history.finishWorkflowChange.mockResolvedValue({ id: "change" });
   fetchMock = vi.fn(async (_url, init) => new Response(JSON.stringify(init?.method === "PUT" ? { ...current, versionId: "v2" } : current), { status: 200 }));
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -36,7 +39,7 @@ it("rejects a stale editor without saving a snapshot or sending a PUT", async ()
 
 it("keeps an applied node edit successful when history persistence fails", async () => {
   const detail = await getN8nWorkflowDetail("w1");
-  history.saveWorkflowChange.mockRejectedValueOnce(new Error("unavailable"));
+  history.finishWorkflowChange.mockRejectedValueOnce(new Error("unavailable"));
   const result = await updateN8nWorkflowNode({ workflowId: "w1", nodeName: "Request", expectedVersion: detail.workflow!.revision, changes: [{ path: "url", value: "https://changed.example.com" }] }, actor);
   expect(result).toMatchObject({ status: "ok", historyPending: true, workflow: { id: "w1" } });
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
@@ -44,7 +47,7 @@ it("keeps an applied node edit successful when history persistence fails", async
 
 it("keeps an applied restore successful when history persistence fails", async () => {
   const detail = await getN8nWorkflowDetail("w1");
-  history.saveWorkflowChange.mockRejectedValueOnce(new Error("unavailable"));
+  history.finishWorkflowChange.mockRejectedValueOnce(new Error("unavailable"));
   const result = await restoreN8nWorkflowVersion("w1", "snapshot", actor, detail.workflow!.revision);
   expect(result).toMatchObject({ status: "ok", historyPending: true });
 });
@@ -53,4 +56,19 @@ it("rejects a restore based on an outdated workflow", async () => {
   const result = await restoreN8nWorkflowVersion("w1", "snapshot", actor, "stale");
   expect(result.status).toBe("conflict");
   expect(history.saveWorkflowSnapshot).not.toHaveBeenCalled();
+});
+
+it("does not change n8n if it cannot durably queue the history intent", async () => {
+  const detail = await getN8nWorkflowDetail("w1");
+  history.queueWorkflowChange.mockRejectedValueOnce(new Error("offline"));
+  const result = await updateN8nWorkflowNode({ workflowId: "w1", nodeName: "Request", expectedVersion: detail.workflow!.revision, changes: [{ path: "url", value: "https://changed.example.com" }] }, actor);
+  expect(result.status).toBe("api_error");
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+});
+
+it("retries pending history on a detail read without sending a remote update", async () => {
+  const detail = await getN8nWorkflowDetail("w1");
+  expect(detail).toMatchObject({ status: "ok", historyPending: 0 });
+  expect(history.recoverWorkflowChanges).toHaveBeenCalledWith("w1", "digest", "v1");
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 });

@@ -182,3 +182,18 @@ it.each([503, 404])("keeps temporary detail failures pending and retires only co
   expect(archive.saveArchivedExecution).toHaveBeenCalledTimes(status === 404 ? 1 : 0);
   expect(archive.setArchiveSyncState).toHaveBeenLastCalledWith(expect.objectContaining({ detailsQueueVersion: 1 }));
 });
+
+it("keeps custom charts unavailable when live history fails despite a readable archive", async () => {
+  archive.archiveConfigured.mockReturnValue(true);
+  archive.getArchiveSyncState.mockResolvedValue({ backfillComplete: true });
+  archive.listArchivedExecutions.mockResolvedValue({ items: [], truncated: false });
+  vi.spyOn(globalThis, "fetch").mockImplementation(async url => {
+    if (String(url).includes("/executions")) return new Response("Unavailable", { status: 503 });
+    return Response.json({ data: [{ id: "wf", name: "Workflow" }] });
+  });
+  const n8n = await import("./n8n.js");
+  const overview = await n8n.getN8nOverview("custom:2026-11-01:2026-11-03");
+  expect(overview).toMatchObject({ status: "ok", truncated: true, chart: [] });
+  const analytics = await n8n.getN8nAnalytics("custom:2026-11-01:2026-11-03");
+  expect(analytics).toMatchObject({ status: "ok", truncated: true, trend: [], comparison: null });
+});

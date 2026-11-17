@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { getFirestoreDocument, isFirestoreConfigured, runFirestoreQuery, setFirestoreDocument, type FirestoreRecord } from "./firestore.js";
+import { deleteFirestoreDocument, getFirestoreDocument, isFirestoreConfigured, runFirestoreQuery, setFirestoreDocument, type FirestoreRecord } from "./firestore.js";
 
 export type WorkflowSnapshot = {
   id: string;
@@ -28,6 +28,15 @@ export type WorkflowChange = {
 
 const SNAPSHOT_COLLECTION = "fluxora_workflow_snapshots";
 const CHANGE_COLLECTION = "fluxora_workflow_changes";
+const OUTBOX_COLLECTION = "fluxora_workflow_change_outbox";
+
+type PendingWorkflowChange = WorkflowChange & { targetDigest: string; baseVersion: string };
+
+export function workflowContentDigest(workflow: Record<string, unknown>) {
+  const content = [workflow.name, workflow.nodes ?? [], workflow.connections ?? {}, workflow.settings ?? {}, workflow.staticData ?? null];
+  const canonical = JSON.stringify(content, (_key, value) => value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
+  return crypto.createHash("sha256").update(canonical).digest("hex");
+}
 
 function randomId() {
   return crypto.randomUUID();
@@ -61,13 +70,41 @@ export async function getWorkflowSnapshot(id: string) {
   return document ? (document as unknown as WorkflowSnapshot) : null;
 }
 
-export async function saveWorkflowChange(input: Omit<WorkflowChange, "id" | "createdAt">) {
+export async function queueWorkflowChange(input: Omit<WorkflowChange, "id" | "createdAt">, targetDigest: string, baseVersion: string) {
   if (!workflowHistoryConfigured()) throw new Error("FIREBASE_NOT_CONFIGURED");
   const createdAt = new Date().toISOString();
   const id = encodeDocumentId(`${input.workflowId}_${Date.now()}_${randomId()}`);
-  const change: WorkflowChange = { ...input, id, createdAt };
-  await setFirestoreDocument(CHANGE_COLLECTION, id, change as unknown as FirestoreRecord);
+  const change: PendingWorkflowChange = { ...input, id, createdAt, targetDigest, baseVersion };
+  await setFirestoreDocument(OUTBOX_COLLECTION, id, change as unknown as FirestoreRecord);
   return change;
+}
+
+export async function finishWorkflowChange(pending: PendingWorkflowChange) {
+  const { targetDigest: _targetDigest, baseVersion: _baseVersion, ...change } = pending;
+  const id = change.id;
+  await setFirestoreDocument(CHANGE_COLLECTION, id, change as unknown as FirestoreRecord);
+  // Reusing the same id makes concurrent recovery and failed queue cleanup safe.
+  await deleteFirestoreDocument(OUTBOX_COLLECTION, id).catch(() => {});
+  return change;
+}
+
+export async function recoverWorkflowChanges(workflowId: string, currentDigest: string, currentVersion: string) {
+  if (!workflowHistoryConfigured()) return { recovered: 0, pending: 0 };
+  const rows = await runFirestoreQuery({ from: [{ collectionId: OUTBOX_COLLECTION }], where: { fieldFilter: { field: { fieldPath: "workflowId" }, op: "EQUAL", value: { stringValue: workflowId } } } });
+  let recovered = 0;
+  for (const row of rows) {
+    try {
+      if (await getFirestoreDocument(CHANGE_COLLECTION, String(row.id))) {
+        await deleteFirestoreDocument(OUTBOX_COLLECTION, String(row.id));
+        recovered++;
+        continue;
+      }
+      if (row.targetDigest !== currentDigest || row.baseVersion === currentVersion) continue;
+      await finishWorkflowChange(row as unknown as PendingWorkflowChange);
+      recovered++;
+    } catch { /* The durable intent remains for the next read. */ }
+  }
+  return { recovered, pending: rows.length - recovered };
 }
 
 export async function listWorkflowChanges(workflowId: string) {
