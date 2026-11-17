@@ -77,3 +77,20 @@ it("does not confirm refresh when only the workflow query failed", async () => {
   expect(toast.success).not.toHaveBeenCalled();
   expect(toast.error).toHaveBeenCalled();
 });
+
+it("keeps rare statuses readable with counts and shares of all executions", () => {
+  queries.overview.data.metrics = { executions: 45170, success: 45023, errors: 139, canceled: 8, running: 0, waiting: 0, successRate: 99.7 };
+  const html = render();
+  expect(html).toContain('aria-label="Distribuição de 45.170 execuções por status"');
+  expect(html).toContain("45.023");
+  expect(html).toContain("0,31%");
+  expect(html).toContain("0,02%");
+  expect(html).toContain("99,67%");
+});
+
+it("does not represent missing distribution data as measured zeroes", () => {
+  queries.overview.data.metrics = null;
+  const html = render();
+  expect(html).not.toContain('aria-label="Distribuição de 0 execuções por status"');
+  expect(html).toContain("Distribuição indisponível");
+});
