@@ -7,7 +7,7 @@ import {
   AlertTriangle,
   BarChart3,
   Bell,
-  ChevronLeft,
+  PanelLeftClose,
   LayoutDashboard,
   LogOut,
   Search,
@@ -261,14 +261,6 @@ export default function OperationsShell({ children }: { children: React.ReactNod
         <div className="relative flex h-[86px] shrink-0 items-center px-[23px]">
           <Link href="/" className="shrink-0" aria-label="Fluxora"><FluxoraMark light className="h-8 w-8" /></Link>
           <div className="sidebar-label ml-2.5 min-w-0 overflow-hidden whitespace-nowrap" aria-hidden={collapsed}><p className="text-[15px] font-semibold tracking-[-0.03em]">Fluxora</p><p className="text-[10px] font-medium text-code-foreground/70">Automation Control Center</p></div>
-          <button
-            onClick={() => setCollapsed((value) => !value)}
-            type="button"
-            aria-expanded={!collapsed}
-            aria-controls="fluxora-sidebar-nav"
-            className="absolute -right-4 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full border-2 border-white/30 bg-[var(--fluxora-mirtilo)] text-white shadow-md hover:border-white/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-            aria-label={collapsed ? "Expandir sidebar" : "Recolher sidebar"}
-          ><ChevronLeft aria-hidden="true" className={`h-5 w-5 transition-transform duration-200 motion-reduce:transition-none ${collapsed ? "rotate-180" : ""}`} /></button>
         </div>
 
         <nav id="fluxora-sidebar-nav" className="flex-1 overflow-x-hidden overflow-y-auto px-3 pt-5">
@@ -297,6 +289,17 @@ export default function OperationsShell({ children }: { children: React.ReactNod
 
       <main data-sidebar-collapsed={collapsed} className={`fluxora-main min-h-screen pb-[calc(76px+env(safe-area-inset-bottom))] lg:pb-0 ${collapsed ? "lg:ml-[78px]" : "lg:ml-[252px]"}`}>
         <header className="sticky top-0 z-20 flex h-[72px] lg:h-[86px] items-center justify-between border-b border-border bg-background/90 px-5 backdrop-blur-xl md:px-9">
+          <Button
+            onClick={() => setCollapsed((value) => !value)}
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-expanded={!collapsed}
+            aria-controls="fluxora-sidebar-nav"
+            className="mr-3 hidden shrink-0 rounded-xl text-muted-foreground hover:text-foreground lg:inline-flex"
+            aria-label={collapsed ? "Expandir sidebar" : "Recolher sidebar"}
+            title={collapsed ? "Expandir sidebar" : "Recolher sidebar"}
+          ><PanelLeftClose aria-hidden="true" className={`h-5 w-5 transition-transform duration-200 motion-reduce:transition-none ${collapsed ? "rotate-180" : ""}`} /></Button>
           <div className="min-w-0 flex-1 pr-2"><p className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">Fluxora</p><h1 className="mt-1 truncate text-base sm:text-xl font-semibold tracking-[-0.03em] text-foreground">{currentTitle}</h1></div>
           <div className="flex shrink-0 items-center gap-0 sm:gap-2">
             <Button type="button" variant="ghost" size="icon" onClick={() => setCommandOpen(true)} className="rounded-xl text-muted-foreground md:hidden" aria-label="Abrir busca global">
