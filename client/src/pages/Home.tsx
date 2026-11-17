@@ -84,11 +84,21 @@ export default function Home() {
 
   const total = m?.executions ?? 0;
   const success = m?.success ?? 0;
-  const successPct = m?.successRate ?? 0;
+
   const errorCount = m?.errors ?? 0;
   const running = m?.running ?? 0;
   const waiting = m?.waiting ?? 0;
   const canceled = m?.canceled ?? 0;
+  const statusDistribution = [
+    { label: "Sucesso", count: success, color: "bg-feedback-success" },
+    { label: "Falhas", count: errorCount, color: "bg-feedback-error" },
+    { label: "Em andamento", count: running, color: "bg-feedback-info" },
+    { label: "Aguardando", count: waiting, color: "bg-amber-500" },
+    { label: "Canceladas", count: canceled, color: "bg-muted-foreground" },
+  ].map(status => {
+    const share = total > 0 ? status.count / total * 100 : 0;
+    return { ...status, share, percentage: share > 0 && share < 0.01 ? "<0,01%" : `${share.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%` };
+  });
 
   return <OperationsShell><div className="mx-auto max-w-[1480px] px-5 py-7 md:px-9">
     <div className="mb-8 flex flex-col justify-between gap-5 xl:flex-row xl:items-end"><div><span className="rounded-full bg-feedback-info-surface px-3 py-1 text-[10px] font-bold uppercase tracking-[.14em] text-feedback-info">Live operations</span><h2 className="mt-4 text-[42px] font-semibold tracking-[-.06em] text-foreground">{initialLoading ? "Carregando visão geral." : !m ? "Dados indisponíveis" : staleData ? "Dados desatualizados" : (m.errors ?? 0) > 0 ? "Há falhas no período." : "Visão geral das automações."}</h2><p className="mt-2 text-sm text-muted-foreground">Monitore o ambiente e escolha os workflows que quer manter em foco.</p></div><div className="flex flex-wrap gap-2"><PeriodFilter value={period} options={periods} onChange={setPeriod} /><Button onClick={refresh} variant="outline" disabled={overview.isFetching || workflows.isFetching} aria-busy={overview.isFetching || workflows.isFetching}><RefreshCw className={`mr-2 h-4 w-4 ${overview.isFetching || workflows.isFetching ? "animate-spin" : ""}`} />{overview.isFetching || workflows.isFetching ? "Atualizando…" : "Atualizar"}</Button></div></div>
@@ -150,7 +160,24 @@ export default function Home() {
       </Card></div>
 
     <div className="mt-6 grid gap-6 xl:grid-cols-2">
-      <Card className="border-0 bg-card shadow-sm"><CardHeader><CardTitle className="text-base">Distribuição por status</CardTitle><p className="text-xs text-muted-foreground">Composição das execuções consultadas no período.</p></CardHeader><CardContent><div className="grid gap-6 md:grid-cols-[1.2fr_.8fr] md:items-center"><div><div className="flex h-12 overflow-hidden rounded-full bg-muted">{total > 0 && <><div className="bg-primary" style={{ width: `${(success / total) * 100}%` }} /><div className="bg-feedback-error" style={{ width: `${(errorCount / total) * 100}%` }} /><div className="bg-feedback-info" style={{ width: `${(running / total) * 100}%` }} /><div className="bg-muted-foreground" style={{ width: `${(waiting / total) * 100}%` }} /><div className="bg-secondary-foreground" style={{ width: `${(canceled / total) * 100}%` }} /></>}</div><div className="mt-5 flex justify-between text-xs text-muted-foreground"><span>{m ? `${successPct}% sucesso` : "—"}</span><span>{m ? `${total} execuções` : "—"}</span></div></div><div className="space-y-3 text-sm text-muted-foreground"><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-primary"/>Sucesso</span><b>{m ? `${successPct}%` : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-feedback-error"/>Falhas</span><b>{m ? errorCount : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-feedback-info"/>Em andamento</span><b>{m ? running : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-muted-foreground"/>Aguardando</span><b>{m ? waiting : "—"}</b></div><div className="flex items-center justify-between"><span><i className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-secondary-foreground"/>Canceladas</span><b>{m ? canceled : "—"}</b></div></div></div></CardContent></Card>
+      <Card className="border-0 bg-card shadow-sm">
+        <CardHeader><CardTitle className="text-base">Distribuição por status</CardTitle><p className="text-xs text-muted-foreground">Quantidade e participação de cada status no total do período.</p></CardHeader>
+        <CardContent>
+          <div className="mb-5 flex flex-wrap items-end justify-between gap-2">
+            <div><p className="text-3xl font-semibold tracking-tight tabular-nums">{m ? total.toLocaleString("pt-BR") : "—"}</p><p className="mt-1 text-xs text-muted-foreground">execuções no período</p></div>
+            {m && total > 0 && <p className="text-sm font-medium text-feedback-success">{statusDistribution[0].percentage} com sucesso</p>}
+          </div>
+          {m && total > 0 ? <div role="img" aria-label={`Distribuição de ${total.toLocaleString("pt-BR")} execuções por status`} className="flex h-4 overflow-hidden rounded-full bg-muted">
+            {statusDistribution.map(status => <div key={status.label} className={`${status.color} shrink-0 transition-[width] duration-300 motion-reduce:transition-none`} style={{ width: `${status.share}%` }} title={`${status.label}: ${status.count.toLocaleString("pt-BR")} (${status.percentage})`} />)}
+          </div> : <p className="rounded-xl bg-muted px-4 py-3 text-sm text-muted-foreground">{initialLoading ? "Carregando distribuição…" : m ? "Nenhuma execução no período" : "Distribuição indisponível"}</p>}
+          <dl className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {statusDistribution.map(status => <div key={status.label} className={`rounded-xl border px-3 py-3 ${status.count > 0 ? "border-border bg-background/50" : "border-transparent"}`}>
+              <dt className="flex items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${status.color}`} />{status.label}</dt>
+              <dd className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 tabular-nums"><span className="text-lg font-semibold text-foreground">{m ? status.count.toLocaleString("pt-BR") : "—"}</span><span className="text-xs text-muted-foreground">{m ? status.percentage : "—"}</span></dd>
+            </div>)}
+          </dl>
+        </CardContent>
+      </Card>
       <Card className="border-0 bg-card shadow-sm"><CardHeader><CardTitle className="text-base">Tempo das execuções</CardTitle><p className="text-xs text-muted-foreground">Compare o tempo médio, o comportamento típico e as execuções mais lentas.</p></CardHeader><CardContent><div className="flex min-h-[190px] items-center rounded-[24px] bg-background px-8"><div>{initialLoading ? <MetricSkeleton className="h-12 w-28" /> : <p className="text-5xl font-semibold tracking-[-.06em] text-foreground">{m?.averageDuration != null ? `${m.averageDuration}s` : "—"}</p>}<p className="mt-3 text-sm text-muted-foreground">tempo médio no período selecionado</p><div className="mt-5 flex gap-6 text-xs"><span><b className="block text-sm text-foreground">{m?.p50Duration != null ? `${m.p50Duration}s` : "—"}</b><span className="text-muted-foreground">tempo típico</span></span><span><b className="block text-sm text-foreground">{m?.p95Duration != null ? `${m.p95Duration}s` : "—"}</b><span className="text-muted-foreground">execuções lentas</span></span></div></div></div></CardContent></Card>
     </div>
 
