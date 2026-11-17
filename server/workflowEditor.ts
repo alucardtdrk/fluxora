@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
+import { withFirestoreLease } from "./firestore.js";
 import { getWorkflowSnapshot, listWorkflowChanges, saveWorkflowChange, saveWorkflowSnapshot, workflowHistoryConfigured } from "./workflowChanges.js";
 
 const SENSITIVE_KEYWORDS = [
@@ -57,6 +59,7 @@ type EditorActor = {
 const updateWorkflowNodeInputSchema = z.object({
   workflowId: z.string().min(1),
   nodeName: z.string().min(1),
+  expectedVersion: z.string().min(1).max(128),
   changes: z.array(z.object({ path: z.string().min(1), value: z.unknown() })).max(80).optional(),
   additions: z.array(z.object({ path: z.string().min(1), kind: z.enum(["condition", "header"]), value: z.record(z.string(), z.unknown()) })).max(20).optional(),
   parameters: z.record(z.string(), z.unknown()).optional(),
@@ -75,6 +78,7 @@ async function n8nRequest<T>(path: string, init?: RequestInit): Promise<T> {
 
   const response = await fetch(`${config.baseUrl}${path}`, {
     ...init,
+    signal: AbortSignal.timeout(30_000),
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
@@ -379,6 +383,7 @@ function normalizeWorkflow(workflow: WorkflowRecord) {
   const nodes = Array.isArray(workflow.nodes) ? workflow.nodes.map((node) => normalizeNode(node, workflow)) : [];
   return {
     id: String(workflow.id || ""),
+    revision: workflowRevision(workflow),
     name: String(workflow.name || "Workflow"),
     active: Boolean(workflow.active),
     updatedAt: workflow.updatedAt ? String(workflow.updatedAt) : null,
@@ -389,6 +394,12 @@ function normalizeWorkflow(workflow: WorkflowRecord) {
     nodes,
   };
 }
+
+function workflowRevision(workflow: WorkflowRecord) {
+  return workflow.versionId || createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
+}
+
+const conflictResult = { status: "conflict" as const, connected: true as const, message: "Este workflow foi alterado ou está sendo salvo por outra pessoa. Sua edição foi preservada. Recarregue a versão atual e revise antes de salvar." };
 
 async function fetchWorkflow(workflowId: string) {
   try {
@@ -430,59 +441,66 @@ export async function updateN8nWorkflowNode(input: z.infer<typeof updateWorkflow
   if (!workflowHistoryConfigured()) return { status: "firestore_not_configured" as const, connected: true as const, message: "Configure o Firestore para registrar snapshot e historico antes de editar workflows." };
 
   try {
-    const currentWorkflow = await fetchWorkflow(parsed.workflowId);
-    const nodes = Array.isArray(currentWorkflow.nodes) ? [...currentWorkflow.nodes] : [];
-    const index = nodes.findIndex((node) => String(node.name || "") === parsed.nodeName);
-    if (index < 0) return { status: "api_error" as const, connected: true as const, message: "Node nao encontrado no workflow." };
+    return await withFirestoreLease(`workflow-${parsed.workflowId}`, async assertActive => {
+      const currentWorkflow = await fetchWorkflow(parsed.workflowId);
+      if (workflowRevision(currentWorkflow) !== parsed.expectedVersion) return conflictResult;
+      const nodes = Array.isArray(currentWorkflow.nodes) ? [...currentWorkflow.nodes] : [];
+      const index = nodes.findIndex((node) => String(node.name || "") === parsed.nodeName);
+      if (index < 0) return { status: "api_error" as const, connected: true as const, message: "Node nao encontrado no workflow." };
 
-    const currentNode = nodes[index];
-    let nextParameters: Record<string, unknown>;
-    if (parsed.parameters) {
-      if (actor.role !== "admin") return { status: "api_error" as const, connected: true as const, message: "O modo avancado de JSON esta disponivel apenas para administradores." };
-      nextParameters = mergeEditableParameters(currentNode.parameters || {}, parsed.parameters) as Record<string, unknown>;
-    } else {
-      const clonedParameters = JSON.parse(JSON.stringify(currentNode.parameters || {})) as Record<string, unknown>;
-      for (const addition of parsed.additions || []) appendControlledItem(clonedParameters, addition, currentNode.type);
-      const nextEditableShape = extractEditableParameters(clonedParameters, "", []);
-      const allowedFields = new Map(buildEditorFields(nextEditableShape).map((field) => [field.path, field]));
-      for (const change of parsed.changes || []) {
-        const allowed = allowedFields.get(change.path);
-        if (!allowed) throw new Error(`CAMPO_NAO_PERMITIDO:${change.path}`);
-        if (typeof change.value !== typeof allowed.value) throw new Error(`FORMATO_INVALIDO:${change.path}`);
-        setExistingValue(clonedParameters, change.path, change.value);
+      const currentNode = nodes[index];
+      let nextParameters: Record<string, unknown>;
+      if (parsed.parameters) {
+        if (actor.role !== "admin") return { status: "api_error" as const, connected: true as const, message: "O modo avancado de JSON esta disponivel apenas para administradores." };
+        nextParameters = mergeEditableParameters(currentNode.parameters || {}, parsed.parameters) as Record<string, unknown>;
+      } else {
+        const clonedParameters = JSON.parse(JSON.stringify(currentNode.parameters || {})) as Record<string, unknown>;
+        for (const addition of parsed.additions || []) appendControlledItem(clonedParameters, addition, currentNode.type);
+        const nextEditableShape = extractEditableParameters(clonedParameters, "", []);
+        const allowedFields = new Map(buildEditorFields(nextEditableShape).map((field) => [field.path, field]));
+        for (const change of parsed.changes || []) {
+          const allowed = allowedFields.get(change.path);
+          if (!allowed) throw new Error(`CAMPO_NAO_PERMITIDO:${change.path}`);
+          if (typeof change.value !== typeof allowed.value) throw new Error(`FORMATO_INVALIDO:${change.path}`);
+          setExistingValue(clonedParameters, change.path, change.value);
+        }
+        nextParameters = clonedParameters;
       }
-      nextParameters = clonedParameters;
-    }
-    nodes[index] = {
-      ...currentNode,
-      parameters: nextParameters,
-    };
+      nodes[index] = {
+        ...currentNode,
+        parameters: nextParameters,
+      };
 
-    const snapshot = await saveWorkflowSnapshot({
-      workflowId: parsed.workflowId,
-      workflowName: String(currentWorkflow.name || "Workflow"),
-      actor: actor.email,
-      actorRole: actor.role,
-      reason: parsed.summary?.trim() || `Ajuste controlado no node ${parsed.nodeName}`,
-      workflow: currentWorkflow as Record<string, unknown>,
+      const snapshot = await saveWorkflowSnapshot({
+        workflowId: parsed.workflowId,
+        workflowName: String(currentWorkflow.name || "Workflow"),
+        actor: actor.email,
+        actorRole: actor.role,
+        reason: parsed.summary?.trim() || `Ajuste controlado no node ${parsed.nodeName}`,
+        workflow: currentWorkflow as Record<string, unknown>,
+      });
+
+      // shortcut: direct n8n edits can race this check; use conditional writes when its public API supports them.
+      if (workflowRevision(await fetchWorkflow(parsed.workflowId)) !== parsed.expectedVersion) return conflictResult;
+      assertActive();
+      const updatedWorkflow = await pushWorkflow(parsed.workflowId, { ...currentWorkflow, nodes });
+      const change = await saveWorkflowChange({
+        workflowId: parsed.workflowId,
+        workflowName: String(currentWorkflow.name || "Workflow"),
+        actor: actor.email,
+        actorRole: actor.role,
+        type: "update",
+        summary: parsed.summary?.trim() || `Parametros atualizados no node ${parsed.nodeName}`,
+        nodeNames: [parsed.nodeName],
+        snapshotId: snapshot.id,
+        restoredFromSnapshotId: null,
+      }).catch(() => null);
+
+      return { status: "ok" as const, connected: true as const, workflow: normalizeWorkflow(updatedWorkflow), snapshotId: snapshot.id, change, historyPending: !change };
     });
-
-    const updatedWorkflow = await pushWorkflow(parsed.workflowId, { ...currentWorkflow, nodes });
-    const change = await saveWorkflowChange({
-      workflowId: parsed.workflowId,
-      workflowName: String(currentWorkflow.name || "Workflow"),
-      actor: actor.email,
-      actorRole: actor.role,
-      type: "update",
-      summary: parsed.summary?.trim() || `Parametros atualizados no node ${parsed.nodeName}`,
-      nodeNames: [parsed.nodeName],
-      snapshotId: snapshot.id,
-      restoredFromSnapshotId: null,
-    });
-
-    return { status: "ok" as const, connected: true as const, workflow: normalizeWorkflow(updatedWorkflow), snapshotId: snapshot.id, change };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (message === "OPERATION_BUSY") return conflictResult;
     const friendlyMessage =
       message.startsWith("CAMPO_NAO_PERMITIDO:")
         ? `O campo ${message.slice("CAMPO_NAO_PERMITIDO:".length)} nao faz parte da edicao controlada deste node.`
@@ -495,40 +513,47 @@ export async function updateN8nWorkflowNode(input: z.infer<typeof updateWorkflow
   }
 }
 
-export async function restoreN8nWorkflowVersion(workflowId: string, snapshotId: string, actor: EditorActor) {
+export async function restoreN8nWorkflowVersion(workflowId: string, snapshotId: string, actor: EditorActor, expectedVersion: string) {
   if (!getConfig()) return { status: "not_configured" as const, connected: false as const };
   if (process.env.CONTROL_ACTIONS_ENABLED !== "true") return { status: "api_error" as const, connected: true as const, message: MANAGED_ACTIONS_MESSAGE };
   if (!workflowHistoryConfigured()) return { status: "firestore_not_configured" as const, connected: true as const, message: "Configure o Firestore para restaurar versoes com seguranca." };
 
   try {
-    const [currentWorkflow, snapshot] = await Promise.all([fetchWorkflow(workflowId), getWorkflowSnapshot(snapshotId)]);
-    if (!snapshot || snapshot.workflowId !== workflowId) return { status: "api_error" as const, connected: true as const, message: "Snapshot nao encontrado para este workflow." };
+    return await withFirestoreLease(`workflow-${workflowId}`, async assertActive => {
+      const [currentWorkflow, snapshot] = await Promise.all([fetchWorkflow(workflowId), getWorkflowSnapshot(snapshotId)]);
+      if (workflowRevision(currentWorkflow) !== expectedVersion) return conflictResult;
+      if (!snapshot || snapshot.workflowId !== workflowId) return { status: "api_error" as const, connected: true as const, message: "Snapshot nao encontrado para este workflow." };
 
-    const beforeRestoreSnapshot = await saveWorkflowSnapshot({
-      workflowId,
-      workflowName: String(currentWorkflow.name || "Workflow"),
-      actor: actor.email,
-      actorRole: actor.role,
-      reason: `Snapshot automatico antes da restauracao ${snapshotId}`,
-      workflow: currentWorkflow as Record<string, unknown>,
+      const beforeRestoreSnapshot = await saveWorkflowSnapshot({
+        workflowId,
+        workflowName: String(currentWorkflow.name || "Workflow"),
+        actor: actor.email,
+        actorRole: actor.role,
+        reason: `Snapshot automatico antes da restauracao ${snapshotId}`,
+        workflow: currentWorkflow as Record<string, unknown>,
+      });
+
+      // shortcut: direct n8n edits can race this check; use conditional writes when its public API supports them.
+      if (workflowRevision(await fetchWorkflow(workflowId)) !== expectedVersion) return conflictResult;
+      assertActive();
+      const restoredWorkflow = await pushWorkflow(workflowId, snapshot.workflow as WorkflowRecord);
+      const restoredNodes = (snapshot.workflow as WorkflowRecord).nodes ?? [];
+      const change = await saveWorkflowChange({
+        workflowId,
+        workflowName: String(restoredWorkflow.name || currentWorkflow.name || "Workflow"),
+        actor: actor.email,
+        actorRole: actor.role,
+        type: "restore",
+        summary: `Workflow restaurado para o snapshot ${snapshot.createdAt}`,
+        nodeNames: restoredNodes.map((node) => String(node.name || "")).filter(Boolean),
+        snapshotId: beforeRestoreSnapshot.id,
+        restoredFromSnapshotId: snapshot.id,
+      }).catch(() => null);
+
+      return { status: "ok" as const, connected: true as const, workflow: normalizeWorkflow(restoredWorkflow), change, historyPending: !change };
     });
-
-    const restoredWorkflow = await pushWorkflow(workflowId, snapshot.workflow as WorkflowRecord);
-    const restoredNodes = (snapshot.workflow as WorkflowRecord).nodes ?? [];
-    const change = await saveWorkflowChange({
-      workflowId,
-      workflowName: String(restoredWorkflow.name || currentWorkflow.name || "Workflow"),
-      actor: actor.email,
-      actorRole: actor.role,
-      type: "restore",
-      summary: `Workflow restaurado para o snapshot ${snapshot.createdAt}`,
-      nodeNames: restoredNodes.map((node) => String(node.name || "")).filter(Boolean),
-      snapshotId: beforeRestoreSnapshot.id,
-      restoredFromSnapshotId: snapshot.id,
-    });
-
-    return { status: "ok" as const, connected: true as const, workflow: normalizeWorkflow(restoredWorkflow), change };
   } catch (error) {
+    if (error instanceof Error && error.message === "OPERATION_BUSY") return conflictResult;
     return { status: "api_error" as const, connected: false as const, message: error instanceof Error ? error.message : String(error) };
   }
 }

@@ -18,8 +18,8 @@ type EditorField = {
   options?: string[];
 };
 type Addition = { path: string; kind: "condition" | "header"; value: Record<string, unknown> };
-type SavePayload = { nodeName: string; changes?: Array<{ path: string; value: unknown }>; additions?: Addition[]; parameters?: Record<string, unknown>; summary?: string };
-type WorkflowNodePanelProps = { node: any | null; canEdit: boolean; canUseAdvanced: boolean; onSave: (payload: SavePayload) => Promise<void> };
+type SavePayload = { expectedVersion: string; nodeName: string; changes?: Array<{ path: string; value: unknown }>; additions?: Addition[]; parameters?: Record<string, unknown>; summary?: string };
+type WorkflowNodePanelProps = { revision: string; node: any | null; canEdit: boolean; canUseAdvanced: boolean; onSave: (payload: SavePayload) => Promise<string> };
 
 const prettyJson = (value: unknown) => JSON.stringify(value ?? {}, null, 2);
 const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {})) as T;
@@ -95,7 +95,8 @@ function FieldControl({ field, value, canEdit, simpleIf, options, onChange }: { 
   );
 }
 
-export default function WorkflowNodePanel({ node, canEdit, canUseAdvanced, onSave }: WorkflowNodePanelProps) {
+export default function WorkflowNodePanel({ revision, node, canEdit, canUseAdvanced, onSave }: WorkflowNodePanelProps) {
+  const [expectedVersion, setExpectedVersion] = useState(revision);
   const [draftParameters, setDraftParameters] = useState<Record<string, unknown>>({});
   const [advancedDraft, setAdvancedDraft] = useState("{}");
   const [summary, setSummary] = useState("");
@@ -107,6 +108,7 @@ export default function WorkflowNodePanel({ node, canEdit, canUseAdvanced, onSav
   const [pendingHeaders, setPendingHeaders] = useState<Array<ReturnType<typeof defaultHeader>>>([]);
 
   useEffect(() => {
+    setExpectedVersion(revision);
     const editable = cloneValue<Record<string, unknown>>(node?.editableParameters || {});
     setDraftParameters(editable);
     setAdvancedDraft(prettyJson(editable));
@@ -154,7 +156,11 @@ export default function WorkflowNodePanel({ node, canEdit, canUseAdvanced, onSav
     if (!pendingChangeCount) return toast.message("Nenhuma alteração para salvar.");
     try {
       setSaving(true);
-      await onSave({ nodeName: node.name, changes: changedFields.map((field) => ({ path: field.path, value: getPathValue(draftParameters, field.path) })), additions: additions.length ? additions : undefined, summary: summary.trim() || undefined });
+      setExpectedVersion(await onSave({ expectedVersion, nodeName: node.name, changes: changedFields.map((field) => ({ path: field.path, value: getPathValue(draftParameters, field.path) })), additions: additions.length ? additions : undefined, summary: summary.trim() || undefined }));
+      setPendingConditions([]);
+      setPendingHeaders([]);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível salvar as alterações.");
     } finally { setSaving(false); }
   };
   const saveAdvanced = async () => {
@@ -162,7 +168,7 @@ export default function WorkflowNodePanel({ node, canEdit, canUseAdvanced, onSav
       setSaving(true);
       const parsed = JSON.parse(advancedDraft);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Use um objeto JSON válido para os parâmetros.");
-      await onSave({ nodeName: node.name, parameters: parsed as Record<string, unknown>, summary: summary.trim() || undefined });
+      setExpectedVersion(await onSave({ expectedVersion, nodeName: node.name, parameters: parsed as Record<string, unknown>, summary: summary.trim() || undefined }));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Não foi possível interpretar o JSON informado.");
     } finally { setSaving(false); }
@@ -194,7 +200,7 @@ export default function WorkflowNodePanel({ node, canEdit, canUseAdvanced, onSav
         {pendingChangeCount ? <div className="rounded-2xl border border-border bg-feedback-info-surface p-4"><p className="text-xs font-semibold text-feedback-info">{pendingChangeCount} alteração(ões) pronta(s) para salvar</p><div className="mt-2 space-y-1 text-xs text-feedback-info">{changedFields.slice(0, 5).map((field) => <p key={field.path}>{labelFor(field, isIfNode)}: <span className="line-through">{String(field.value)}</span> para <strong>{String(getPathValue(draftParameters, field.path))}</strong></p>)}{pendingConditions.length ? <p>{pendingConditions.length} condição(ões) adicional(is) será(ão) criada(s).</p> : null}{pendingHeaders.length ? <p>{pendingHeaders.length} cabeçalho(s) adicional(is) será(ão) criado(s).</p> : null}</div></div> : null}
         <div><p className="mb-2 text-xs font-semibold text-foreground">Resumo da alteração</p><Textarea value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="Ex.: ajustar webhook, timeout ou regra operacional" className="min-h-[84px] text-sm" disabled={!canEdit || node.editBlocked} /></div>
         {!canEdit ? <div className="rounded-2xl border border-border bg-muted p-4 text-xs text-muted-foreground">Seu perfil tem acesso de leitura. Apenas operador e administrador podem salvar campos permitidos.</div> : null}
-        <div className="flex flex-wrap gap-2"><Button onClick={saveForm} aria-busy={saving} disabled={!canEdit || node.editBlocked || saving || !pendingChangeCount} className="bg-primary text-primary-foreground">{saving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}{saving ? "Salvando…" : "Salvar alterações"}</Button><Button variant="outline" onClick={() => { setDraftParameters(cloneValue(node.editableParameters || {})); setPendingConditions([]); setPendingHeaders([]); }} disabled={saving}><ArrowRight className="mr-2 h-4 w-4" />Descartar rascunho</Button></div>
+        <div className="flex flex-wrap gap-2"><Button onClick={saveForm} aria-busy={saving} disabled={!canEdit || node.editBlocked || saving || !pendingChangeCount} className="bg-primary text-primary-foreground">{saving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}{saving ? "Salvando…" : "Salvar alterações"}</Button><Button variant="outline" onClick={() => { setExpectedVersion(revision); setDraftParameters(cloneValue(node.editableParameters || {})); setPendingConditions([]); setPendingHeaders([]); }} disabled={saving}><ArrowRight className="mr-2 h-4 w-4" />Descartar rascunho</Button></div>
         {canUseAdvanced && !node.editBlocked ? <div className="border-t border-border pt-4"><Button variant="ghost" className="w-full justify-between px-1" onClick={() => setShowAdvanced((value) => !value)}><span className="text-xs font-semibold text-muted-foreground">Modo avançado (administrador)</span><ChevronDown className={`h-4 w-4 transition ${showAdvanced ? "rotate-180" : ""}`} /></Button>{showAdvanced ? <div className="mt-4 space-y-3"><p className="text-xs text-muted-foreground">Use somente quando o formulário não cobrir a configuração. Campos protegidos continuam bloqueados.</p><Textarea value={advancedDraft} onChange={(event) => setAdvancedDraft(event.target.value)} disabled={saving} className="min-h-[260px] resize-y font-mono text-[12px] leading-5" /><Button variant="outline" onClick={saveAdvanced} disabled={saving} aria-busy={saving}>{saving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}{saving ? "Salvando…" : "Salvar JSON avançado"}</Button></div> : null}</div> : null}
       </CardContent>
     </Card>

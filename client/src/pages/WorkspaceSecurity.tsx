@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ShieldAlert, ShieldCheck, UserRoundX } from "lucide-react";
 import OperationsShell from "@/components/OperationsShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,10 +7,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { trpc } from "@/lib/trpc";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
 import { sourceLabels, shouldRefreshCurrentSecurity, summarizeSecurityCollection, runSecurityRefresh, type RefreshSourceResult } from "@/lib/workspaceSecurityRefresh";
-import { WORKSPACE_SECURITY_SOURCES } from "@shared/workspaceSecurity";
+import { WORKSPACE_SECURITY_SOURCES, WORKSPACE_SECURITY_CATEGORIES, type WorkspaceEventCursor } from "@shared/workspaceSecurity";
 
 const severityLabels: Record<string, string> = {
   critical: "Crítica",
@@ -110,8 +111,9 @@ export default function WorkspaceSecurity() {
       if (mounted.current && selected.some(name => !result[name] || result[name].status === "incomplete")) {
         setRefreshMessage("Atualização pausada. O progresso foi salvo; continue de onde parou.");
       }
-    } catch {
-      if (mounted.current) setRefreshMessage("A atualização foi interrompida. O progresso salvo será retomado na próxima tentativa.");
+    } catch (error) {
+      if (mounted.current && error instanceof Error && error.message.includes("OPERATION_BUSY")) setRefreshMessage("Outra atualização já está em andamento. Aguarde a conclusão e tente novamente.");
+      else if (mounted.current) setRefreshMessage("A atualização foi interrompida. O progresso salvo será retomado na próxima tentativa.");
     } finally {
       if (mounted.current) {
         await Promise.all([dashboard.refetch(), page.refetch()]);
@@ -127,11 +129,11 @@ export default function WorkspaceSecurity() {
   const [severity, setSeverity] = useState("all");
   const [period, setPeriod] = useState("90d");
   const [category, setCategory] = useState("all");
-  const [pageOffsets, setPageOffsets] = useState([0]);
-  const page = trpc.workspaceSecurity.eventsPage.useQuery({ offset: pageOffsets[pageOffsets.length - 1], source: source === "all" ? undefined : source, severity: severity === "all" ? undefined : severity, category: category === "all" ? undefined : category, periodDays: Number.parseInt(period, 10) }, { retry: false });
+  const [pageCursors, setPageCursors] = useState<Array<WorkspaceEventCursor | null>>([null]);
+  const page = trpc.workspaceSecurity.eventsPage.useQuery({ cursor: pageCursors[pageCursors.length - 1], source: source === "all" ? undefined : source, severity: severity === "all" ? undefined : severity, category: category === "all" ? undefined : category, periodDays: Number.parseInt(period, 10) }, { retry: false });
   const events = page.data?.events ?? [];
-  useEffect(() => { setPageOffsets([0]); }, [source, severity, category, period]);
-  const categories = useMemo(() => [...new Set((dashboard.data?.events ?? []).map((event) => event.category))].sort(), [dashboard.data?.events]);
+  useEffect(() => { setPageCursors([null]); }, [source, severity, category, period]);
+  const categories = Object.entries(WORKSPACE_SECURITY_CATEGORIES);
   const summary = dashboard.data?.summary ?? { recentEvents: 0, highOrCriticalEvents: 0, coveragePercent: 0, backfillPagesProcessed: 0 };
   const posture = dashboard.data?.posture;
   const findings = dashboard.data?.findings ?? [];
@@ -164,16 +166,25 @@ export default function WorkspaceSecurity() {
         </div>
         {user?.role === "admin" && <Button disabled={refreshing || dashboard.isLoading} onClick={() => void updateSecurity(true)}>{refreshing ? "Atualizando…" : collection.failed ? "Tentar fontes com pendência" : collection.completed < collection.total ? "Continuar atualização" : "Atualizar segurança"}</Button>}
       </div>
-      <details className="mt-3 text-xs">
-        <summary className="cursor-pointer font-medium">Ver detalhes das {collection.total} fontes</summary>
-        <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-          {sources.map(item => <li key={item.source} className="rounded-lg bg-muted/40 p-3">
-            <p className="font-medium">{sourceLabels[item.source]} · {item.status === "ok" || item.status === "empty" ? "Atualizada" : item.status === "failure" ? "Falha na atualização" : item.status === "incomplete" ? refreshing ? "Coletando páginas" : "Páginas pendentes" : "Aguardando atualização"}</p>
+      <Accordion type="single" collapsible className="mt-4 border-t">
+        <AccordionItem value="sources">
+          <AccordionTrigger className="items-center rounded-lg px-2 py-3 hover:bg-muted/40 hover:no-underline">
+            <span className="flex flex-wrap items-center gap-2">Detalhes das fontes<span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{collection.total}</span></span>
+          </AccordionTrigger>
+          <AccordionContent className="px-2 pb-2 pt-1">
+        <ul className="grid gap-2 sm:grid-cols-2">
+          {sources.map(item => <li key={item.source} className="rounded-lg border bg-muted/20 p-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-medium text-foreground">{sourceLabels[item.source]}</p>
+              <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${item.status === "ok" || item.status === "empty" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/20 dark:text-emerald-200" : item.status === "failure" ? "bg-orange-100 text-orange-900 dark:bg-orange-400/20 dark:text-orange-200" : "bg-muted text-muted-foreground"}`}>{item.status === "ok" || item.status === "empty" ? "Atualizada" : item.status === "failure" ? "Falha na atualização" : item.status === "incomplete" ? refreshing ? "Coletando páginas" : "Páginas pendentes" : "Aguardando atualização"}</span>
+            </div>
             {item.completedAt && <p className="mt-1 text-muted-foreground">Última tentativa: {new Date(item.completedAt).toLocaleString("pt-BR")}</p>}
             {item.status === "failure" && <p className="mt-1 text-orange-700 dark:text-orange-300">{item.safeError === "permission" ? "Verifique as permissões de acesso desta fonte." : item.safeError === "rate_limited" ? "O Google limitou as consultas. Tente novamente em instantes." : "Não foi possível concluir. Tente novamente; se persistir, verifique a conexão."}</p>}
           </li>)}
         </ul>
-      </details>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
     </div>
     <div className="mt-3 text-xs text-muted-foreground">
       <p className="font-medium">Importação de histórico antigo · {Math.round(summary.coveragePercent)}% de cobertura</p>
@@ -229,9 +240,10 @@ export default function WorkspaceSecurity() {
 
 
 
-    <Card className="mt-6 border-0"><CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between"><div><CardTitle className="text-base">Eventos recentes</CardTitle><p className="mt-1 text-xs text-muted-foreground">Dados somente de leitura sincronizados do Google Workspace.</p></div><div className="flex flex-wrap gap-2"><Select value={period} onValueChange={setPeriod}><SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="1d">24 horas</SelectItem><SelectItem value="7d">7 dias</SelectItem><SelectItem value="30d">30 dias</SelectItem><SelectItem value="90d">90 dias</SelectItem></SelectContent></Select><Select value={source} onValueChange={setSource}><SelectTrigger className="w-[145px]"><SelectValue placeholder="Origem" /></SelectTrigger><SelectContent><SelectItem value="all">Todas as origens</SelectItem>{Object.entries(sourceLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select><Select value={category} onValueChange={setCategory}><SelectTrigger className="w-[145px]"><SelectValue placeholder="Categoria" /></SelectTrigger><SelectContent><SelectItem value="all">Todas categorias</SelectItem>{categories.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={severity} onValueChange={setSeverity}><SelectTrigger className="w-[135px]"><SelectValue placeholder="Severidade" /></SelectTrigger><SelectContent><SelectItem value="all">Todas</SelectItem>{Object.entries(severityLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div></CardHeader><CardContent>
-      {page.isLoading ? <p className="py-10 text-center text-sm text-muted-foreground">Carregando eventos de segurança…</p> : page.isError ? <p className="py-10 text-center text-sm text-orange-700 dark:text-orange-300">Não foi possível carregar os eventos. Tente novamente em instantes.</p> : events.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">Nenhum evento encontrado nesta página.</p> : <div className="overflow-x-auto"><table className="security-events w-full md:min-w-[760px] text-left text-sm"><thead className="border-b text-xs text-muted-foreground"><tr><th className="pb-3 font-medium">Data</th><th className="pb-3 font-medium">Origem</th><th className="pb-3 font-medium">Severidade</th><th className="pb-3 font-medium">Evento</th><th className="pb-3 font-medium">Ator</th></tr></thead><tbody>{events.map((event) => <tr key={event.id} tabIndex={0} role="button" aria-label={`Ver detalhes de ${eventName(event.source, event.type, event.title)}`} className="cursor-pointer border-b outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 last:border-0" onClick={() => setSelectedEvent(event)} onKeyDown={(key) => { if (key.key === "Enter" || key.key === " ") { key.preventDefault(); setSelectedEvent(event); } }}><td data-label="Data" className="py-4 text-muted-foreground">{new Date(event.occurredAt).toLocaleString("pt-BR")}</td><td data-label="Origem" className="py-4">{sourceLabels[event.source] ?? event.source}</td><td data-label="Severidade" className="py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${severityClass(event.severity)}`}>{severityLabels[event.severity] ?? event.severity}</span></td><td data-label="Evento" className="py-4"><p className="font-medium">{eventName(event.source, event.type, event.title)}</p><p className="mt-1 max-w-md text-xs text-muted-foreground">{event.target ? `Alvo: ${event.target}` : event.details?.[0] ? `${event.details[0].label}: ${event.details[0].value}` : event.ipAddress ? `IP: ${event.ipAddress}` : event.description}</p></td><td data-label="Ator" className="py-4 text-muted-foreground">{event.actor ?? "—"}</td></tr>)}</tbody></table></div>}
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-3"><span className="text-xs text-muted-foreground">Página {pageOffsets.length} · até 25 eventos</span><Button variant="outline" disabled={pageOffsets.length === 1 || page.isFetching} onClick={() => setPageOffsets((current) => current.slice(0, -1))}>Anterior</Button><Button variant="outline" disabled={page.data?.nextOffset == null || page.isFetching} onClick={() => { if (page.data?.nextOffset != null) setPageOffsets((current) => [...current, page.data!.nextOffset!]); }}>Próxima</Button></div>
+    <Card className="mt-6 border-0"><CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between"><div><CardTitle className="text-base">Eventos recentes</CardTitle><p className="mt-1 text-xs text-muted-foreground">Dados somente de leitura sincronizados do Google Workspace.</p></div><div className="flex flex-wrap gap-2"><Select value={period} onValueChange={setPeriod}><SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="1d">24 horas</SelectItem><SelectItem value="7d">7 dias</SelectItem><SelectItem value="30d">30 dias</SelectItem><SelectItem value="90d">90 dias</SelectItem></SelectContent></Select><Select value={source} onValueChange={setSource}><SelectTrigger className="w-[145px]"><SelectValue placeholder="Origem" /></SelectTrigger><SelectContent><SelectItem value="all">Todas as origens</SelectItem>{Object.entries(sourceLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select><Select value={category} onValueChange={setCategory}><SelectTrigger className="w-[145px]"><SelectValue placeholder="Categoria" /></SelectTrigger><SelectContent><SelectItem value="all">Todas categorias</SelectItem>{categories.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select><Select value={severity} onValueChange={setSeverity}><SelectTrigger className="w-[135px]"><SelectValue placeholder="Severidade" /></SelectTrigger><SelectContent><SelectItem value="all">Todas</SelectItem>{Object.entries(severityLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div></CardHeader><CardContent>
+      {page.isLoading ? <p className="py-10 text-center text-sm text-muted-foreground">Carregando eventos de segurança…</p> : page.isError ? <p className="py-10 text-center text-sm text-orange-700 dark:text-orange-300">Não foi possível carregar os eventos. Tente novamente em instantes.</p> : events.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">{page.data?.searchIncomplete ? "Ainda não encontramos eventos neste trecho. Continue a busca para verificar os próximos registros." : "Nenhum evento encontrado para estes filtros."}</p> : <div className="overflow-x-auto"><table className="security-events w-full md:min-w-[760px] text-left text-sm"><thead className="border-b text-xs text-muted-foreground"><tr><th className="pb-3 font-medium">Data</th><th className="pb-3 font-medium">Origem</th><th className="pb-3 font-medium">Severidade</th><th className="pb-3 font-medium">Evento</th><th className="pb-3 font-medium">Ator</th></tr></thead><tbody>{events.map((event) => <tr key={event.id} tabIndex={0} role="button" aria-label={`Ver detalhes de ${eventName(event.source, event.type, event.title)}`} className="cursor-pointer border-b outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 last:border-0" onClick={() => setSelectedEvent(event)} onKeyDown={(key) => { if (key.key === "Enter" || key.key === " ") { key.preventDefault(); setSelectedEvent(event); } }}><td data-label="Data" className="py-4 text-muted-foreground">{new Date(event.occurredAt).toLocaleString("pt-BR")}</td><td data-label="Origem" className="py-4">{sourceLabels[event.source] ?? event.source}</td><td data-label="Severidade" className="py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${severityClass(event.severity)}`}>{severityLabels[event.severity] ?? event.severity}</span></td><td data-label="Evento" className="py-4"><p className="font-medium">{eventName(event.source, event.type, event.title)}</p><p className="mt-1 max-w-md text-xs text-muted-foreground">{event.target ? `Alvo: ${event.target}` : event.details?.[0] ? `${event.details[0].label}: ${event.details[0].value}` : event.ipAddress ? `IP: ${event.ipAddress}` : event.description}</p></td><td data-label="Ator" className="py-4 text-muted-foreground">{event.actor ?? "—"}</td></tr>)}</tbody></table></div>}
+      {page.data?.searchIncomplete && events.length > 0 && <p role="status" className="mt-3 text-xs text-muted-foreground">A busca ainda está incompleta. Continue para consultar os próximos registros.</p>}
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-3"><span className="text-xs text-muted-foreground">Página {pageCursors.length} · até 25 eventos</span><Button variant="outline" disabled={pageCursors.length === 1 || page.isFetching} onClick={() => setPageCursors((current) => current.slice(0, -1))}>Anterior</Button><Button variant="outline" disabled={page.data?.nextCursor == null || page.isFetching} onClick={() => { if (page.data?.nextCursor != null) setPageCursors((current) => [...current, page.data!.nextCursor!]); }}>{page.data?.searchIncomplete ? "Continuar busca" : "Próxima"}</Button></div>
     </CardContent></Card>
 
     <Dialog open={Boolean(selectedEvent)} onOpenChange={(open) => { if (!open) setSelectedEvent(null); }}>

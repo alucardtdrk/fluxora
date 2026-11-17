@@ -1,3 +1,4 @@
+import type { WorkspaceEventCursor } from "../../shared/workspaceSecurity.js";
 import { getFirestoreDocument, isFirestoreConfigured, runFirestoreQuery, type FirestoreRecord } from "../firestore.js";
 import {
   WORKSPACE_DIRECTORY_POSTURE_COLLECTION,
@@ -246,36 +247,41 @@ async function listWorkspaceEvents(): Promise<readonly FirestoreRecord[]> {
   });
 }
 
+type WorkspaceEventPageInput = { cursor?: WorkspaceEventCursor | null; pageSize?: number; source?: string; severity?: string; category?: string; periodDays?: number };
+
 export async function createWorkspaceEventPage(
-  input: { offset: number; pageSize?: number; source?: string; severity?: string; category?: string; periodDays?: number },
-  listBatch: (offset: number, limit: number) => Promise<readonly FirestoreRecord[]>,
-): Promise<{ events: readonly WorkspaceDashboardEvent[]; nextOffset: number | null }> {
+  input: WorkspaceEventPageInput,
+  listBatch: (cursor: WorkspaceEventCursor | null, limit: number) => Promise<readonly FirestoreRecord[]>,
+): Promise<{ events: readonly WorkspaceDashboardEvent[]; nextCursor: WorkspaceEventCursor | null; searchIncomplete: boolean }> {
   const pageSize = Math.min(Math.max(input.pageSize ?? 25, 1), 50);
   const events: WorkspaceDashboardEvent[] = [];
-  let offset = input.offset;
+  let cursor = input.cursor ?? null;
   const cutoff = input.periodDays ? Date.now() - input.periodDays * 86_400_000 : 0;
   for (let batch = 0; batch < 5; batch++) {
-    const records = await listBatch(offset, 100);
-    const batchEnd = offset + records.length;
-    for (const record of records) {
-      offset++;
+    const records = await listBatch(cursor, 100);
+    for (let index = 0; index < records.length; index++) {
+      const record = records[index];
       const event = dashboardEvent(record);
-      if ((input.source && event.source !== input.source) || (input.severity && event.severity !== input.severity) || (input.category && event.category !== input.category) || new Date(event.occurredAt).getTime() < cutoff) continue;
+      if (new Date(event.occurredAt).getTime() < cutoff) return { events, nextCursor: null, searchIncomplete: false };
+      if (typeof record._documentName !== "string") throw new Error("WORKSPACE_EVENT_CURSOR_MISSING");
+      cursor = { occurredAt: event.occurredAt, documentName: record._documentName };
+      if ((input.source && event.source !== input.source) || (input.severity && event.severity !== input.severity) || (input.category && event.category !== input.category)) continue;
       events.push(event);
-      if (events.length === pageSize) return { events, nextOffset: offset < batchEnd || records.length === 100 ? offset : null };
+      if (events.length === pageSize) return { events, nextCursor: index < records.length - 1 || records.length === 100 ? cursor : null, searchIncomplete: false };
     }
-    if (records.length < 100) return { events, nextOffset: null };
+    if (records.length < 100) return { events, nextCursor: null, searchIncomplete: false };
   }
-  return { events, nextOffset: offset };
+  return { events, nextCursor: cursor, searchIncomplete: true };
 }
 
-export async function getWorkspaceEventPage(input: { offset: number; source?: string; severity?: string; category?: string; periodDays?: number }) {
-  if (!isFirestoreConfigured()) return { events: [], nextOffset: null };
-  return createWorkspaceEventPage(input, (offset, limit) => runFirestoreQuery({
+export async function getWorkspaceEventPage(input: WorkspaceEventPageInput) {
+  if (!isFirestoreConfigured()) return { events: [], nextCursor: null, searchIncomplete: false };
+  return createWorkspaceEventPage(input, (cursor, limit) => runFirestoreQuery({
     select: { fields: ["externalId", "source", "category", "type", "severity", "title", "description", "occurredAt", "actor", "target", "ipAddress", "country", "metadata", "safeDetails"].map((fieldPath) => ({ fieldPath })) },
     from: [{ collectionId: WORKSPACE_SECURITY_EVENTS_COLLECTION }],
-    orderBy: [{ field: { fieldPath: "occurredAt" }, direction: "DESCENDING" }],
-    offset,
+    orderBy: [{ field: { fieldPath: "occurredAt" }, direction: "DESCENDING" }, { field: { fieldPath: "__name__" }, direction: "DESCENDING" }],
+    ...(input.periodDays ? { where: { fieldFilter: { field: { fieldPath: "occurredAt" }, op: "GREATER_THAN_OR_EQUAL", value: { timestampValue: new Date(Date.now() - input.periodDays * 86_400_000).toISOString() } } } } : {}),
+    ...(cursor ? { startAt: { before: false, values: [{ timestampValue: cursor.occurredAt }, { referenceValue: cursor.documentName }] } } : {}),
     limit,
   }));
 }

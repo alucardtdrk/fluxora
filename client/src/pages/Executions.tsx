@@ -1,3 +1,4 @@
+import type { DashboardPeriod } from "@shared/dashboardPeriod";
 import { BRAZIL_TIME_ZONE } from "@shared/timezone";
 import { useDeferredValue, useEffect, useState } from "react";
 import { ArrowLeft, Eye, GitCompareArrows, RefreshCw, Search, Timer, X } from "lucide-react";
@@ -17,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PREFERENCES_UPDATED_EVENT, readPreferredPageSize, readScopedPeriod, saveScopedPeriod, rememberFiltersEnabled } from "@/lib/preferences";
 import { trpc } from "@/lib/trpc";
 
-type Period = "today" | "7d" | "30d" | "90d" | "all";
+type Period = DashboardPeriod;
 
 const periods: Array<[Period, string]> = [
   ["today", "Hoje"],
@@ -106,8 +107,16 @@ export default function Executions() {
     setPage(1);
   };
   const refresh = async () => {
-    await Promise.all([executions.refetch(), workflows.refetch()]);
-    toast.success("Histórico atualizado");
+    try {
+      const [history, catalog] = await Promise.all([executions.refetch(), workflows.refetch()]);
+      if (history.error || catalog.error || history.data?.status !== "ok" || catalog.data?.status !== "ok") {
+        toast.error("Não foi possível atualizar todo o histórico", { description: "Tente novamente em instantes. Os dados anteriores foram mantidos quando disponíveis." });
+        return;
+      }
+      toast.success("Histórico atualizado");
+    } catch {
+      toast.error("Não foi possível atualizar o histórico", { description: "Verifique sua conexão e tente novamente." });
+    }
   };
   const toggleComparison = (item: { id: string; workflowId?: string; workflowName?: string }) => {
     setComparisonSelection((current) => {

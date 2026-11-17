@@ -1,8 +1,8 @@
-export type DashboardPeriod = "today" | "7d" | "30d" | "90d" | "all";
+import { isDashboardPeriod, type DashboardPeriod } from "@shared/dashboardPeriod";
+export type { DashboardPeriod } from "@shared/dashboardPeriod";
 export const PREFERENCE_SCOPES = ["home", "analytics", "errors", "executions"] as const;
 export const PREFERENCES_UPDATED_EVENT = "fluxora:preferences-updated";
 
-const VALID_PERIODS = new Set<DashboardPeriod>(["today", "7d", "30d", "90d", "all"]);
 const VALID_PAGE_SIZES = new Set(["25", "50", "100"]);
 
 function readStorage(key: string) {
@@ -16,14 +16,14 @@ export function rememberFiltersEnabled() {
 
 export function readDefaultPeriod(fallback: DashboardPeriod = "7d") {
   const value = readStorage("fluxoraDefaultPeriod");
-  return value && VALID_PERIODS.has(value as DashboardPeriod) ? (value as DashboardPeriod) : fallback;
+  return isDashboardPeriod(value) ? value : fallback;
 }
 
 export function readScopedPeriod(scope: string, fallback?: DashboardPeriod) {
   const base = fallback ?? readDefaultPeriod();
   if (!rememberFiltersEnabled()) return base;
   const value = readStorage(`fluxoraPeriod:${scope}`);
-  return value && VALID_PERIODS.has(value as DashboardPeriod) ? (value as DashboardPeriod) : base;
+  return isDashboardPeriod(value) ? value : base;
 }
 
 export function saveScopedPeriod(scope: string, period: DashboardPeriod) {

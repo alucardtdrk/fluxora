@@ -1,3 +1,4 @@
+import { isDashboardPeriod, type DashboardPeriod } from "../shared/dashboardPeriod.js";
 import { authConfigured, clearSessionCookie } from "./auth.js";
 import { adminProcedure, operatorProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc.js";
 import { getN8nAnalytics, getN8nExecutionDetail, getN8nOverview, invalidateN8nCache, listN8nExecutions, listN8nExecutionsPage, listN8nRecentErrors, listN8nWorkflows, preserveN8nExecutionDetails, setN8nWorkflowActive, syncN8nArchive } from "./n8n.js";
@@ -15,7 +16,8 @@ import { getWorkspaceEvent, getWorkspaceEventPage, getWorkspaceSecurityDashboard
 
 import { WORKSPACE_SECURITY_SOURCES } from "../shared/workspaceSecurity.js";
 
-const periodSchema = z.enum(["today", "7d", "30d", "90d", "all"]);
+const presetPeriodSchema = z.enum(["today", "7d", "30d", "90d", "all"]);
+const periodSchema = z.custom<DashboardPeriod>(isDashboardPeriod, { message: "Período inválido. Confira as datas inicial e final." });
 const roleSchema = z.enum(["admin", "operator", "viewer"]);
 
 async function audited<T>(event: AuditEventInput, operation: () => Promise<T>) {
@@ -50,7 +52,7 @@ export const appRouter = router({
   workspaceSecurity: router({
     event: protectedProcedure.input(z.object({ id: z.string().min(1).max(1500).regex(/^[^/]+$/) })).query(({ input }) => getWorkspaceEvent(input.id)),
     overview: protectedProcedure.query(() => getWorkspaceSecurityDashboard()),
-    eventsPage: protectedProcedure.input(z.object({ offset: z.number().int().min(0).max(100000).default(0), source: z.string().optional(), severity: z.string().optional(), category: z.string().optional(), periodDays: z.number().int().min(1).max(90).default(90) })).query(({ input }) => getWorkspaceEventPage(input)),
+    eventsPage: protectedProcedure.input(z.object({ cursor: z.object({ occurredAt: z.string().datetime(), documentName: z.string().max(1500).regex(/^projects\/[^/]+\/databases\/\(default\)\/documents\/fluxora\/data\/workspace-security-events\/[^/]+$/) }).nullish(), source: z.string().optional(), severity: z.string().optional(), category: z.string().optional(), periodDays: z.number().int().min(1).max(90).default(90) })).query(({ input }) => getWorkspaceEventPage(input)),
     refreshCurrent: adminProcedure.input(z.object({ sources: z.array(z.enum(WORKSPACE_SECURITY_SOURCES)).min(1).max(3) }).optional()).mutation(({ ctx, input }) => audited({ action: "google_workspace.refresh_current", category: "configuration", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "google_workspace", summary: "Atualizou os sinais atuais de segurança do Google Workspace" }, () => syncCurrentGoogleWorkspaceSecurity(input?.sources))),
     continueBackfill: adminProcedure.mutation(({ ctx }) => audited({ action: "google_workspace.backfill", category: "configuration", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "google_workspace", summary: "Avançou o histórico de segurança do Google Workspace" }, () => continueGoogleWorkspaceSecurityBackfill())),
   }),
@@ -84,15 +86,16 @@ export const appRouter = router({
     updateWorkflowNode: operatorProcedure.input(z.object({
       workflowId: z.string().min(1),
       nodeName: z.string().min(1),
+      expectedVersion: z.string().min(1).max(128),
       changes: z.array(z.object({ path: z.string().min(1), value: z.unknown() })).max(80).optional(),
       additions: z.array(z.object({ path: z.string().min(1), kind: z.enum(["condition", "header"]), value: z.record(z.string(), z.unknown()) })).max(20).optional(),
       parameters: z.record(z.string(), z.unknown()).optional(),
       summary: z.string().trim().max(240).optional(),
     }).refine((input) => Boolean(input.parameters) || Boolean(input.changes?.length) || Boolean(input.additions?.length), { message: "Informe ao menos uma alteracao." })).mutation(({ input, ctx }) => audited({ action: "workflow.node_update", category: "workflow", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "node", targetId: input.workflowId, targetName: input.nodeName, summary: `Editou o node ${input.nodeName}`, metadata: { changedPaths: input.changes?.map((item) => item.path) ?? [], addedPaths: input.additions?.map((item) => item.path) ?? [], summary: input.summary } }, () => updateN8nWorkflowNode(input, { email: ctx.user.email, role: ctx.user.role }))),
-    restoreWorkflowVersion: adminProcedure.input(z.object({ workflowId: z.string().min(1), snapshotId: z.string().min(1) })).mutation(({ input, ctx }) => audited({ action: "workflow.restore", category: "workflow", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "workflow", targetId: input.workflowId, summary: `Restaurou uma versão anterior do workflow ${input.workflowId}`, metadata: { snapshotId: input.snapshotId } }, () => restoreN8nWorkflowVersion(input.workflowId, input.snapshotId, { email: ctx.user.email, role: ctx.user.role }))),
+    restoreWorkflowVersion: adminProcedure.input(z.object({ workflowId: z.string().min(1), snapshotId: z.string().min(1), expectedVersion: z.string().min(1).max(128) })).mutation(({ input, ctx }) => audited({ action: "workflow.restore", category: "workflow", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "workflow", targetId: input.workflowId, summary: `Restaurou uma versão anterior do workflow ${input.workflowId}`, metadata: { snapshotId: input.snapshotId } }, () => restoreN8nWorkflowVersion(input.workflowId, input.snapshotId, { email: ctx.user.email, role: ctx.user.role }, input.expectedVersion))),
   }),
   audit: router({
-    list: adminProcedure.input(z.object({ period: periodSchema.default("30d"), category: z.enum(["workflow", "incident", "configuration", "access", "history", "data"]).optional(), status: z.enum(["success", "failure"]).optional(), search: z.string().max(160).optional(), pageSize: z.number().int().min(1).max(100).default(50), cursor: z.object({ createdAt: z.string().datetime(), documentName: z.string().max(1500).regex(/^projects\/[^/]+\/databases\/\(default\)\/documents\/fluxora\/data\/audit-events\/[^/]+$/) }).nullish() })).query(({ input }) => listAuditEvents(input)),
+    list: adminProcedure.input(z.object({ period: presetPeriodSchema.default("30d"), category: z.enum(["workflow", "incident", "configuration", "access", "history", "data"]).optional(), status: z.enum(["success", "failure"]).optional(), search: z.string().max(160).optional(), pageSize: z.number().int().min(1).max(100).default(50), cursor: z.object({ createdAt: z.string().datetime(), documentName: z.string().max(1500).regex(/^projects\/[^/]+\/databases\/\(default\)\/documents\/fluxora\/data\/audit-events\/[^/]+$/) }).nullish() })).query(({ input }) => listAuditEvents(input)),
   }),
   admin: router({
     refreshArchiveStatus: adminProcedure.query(() => getArchiveDiagnostics(true)),

@@ -142,6 +142,39 @@ async function firestoreFetch(path: string, init?: RequestInit) {
   return response;
 }
 
+export async function withFirestoreLease<T>(key: string, operation: (assertActive: () => void) => Promise<T>): Promise<T> {
+  const path = `/fluxora/data/operation-locks/${encodeURIComponent(key)}`;
+  const existing = await firestoreFetch(path);
+  if (!existing.ok && existing.status !== 404) throw new Error("OPERATION_LOCK_UNAVAILABLE");
+  const document = existing.ok ? await existing.json() : null;
+  if (Number(document?.fields?.expiresAt?.integerValue) > Date.now()) throw new Error("OPERATION_BUSY");
+  const expiresAt = Date.now() + 600_000;
+  const owner = crypto.randomUUID();
+  const condition = document ? `currentDocument.updateTime=${encodeURIComponent(document.updateTime)}` : "currentDocument.exists=false";
+  const acquired = await firestoreFetch(`${path}?${condition}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: encodeFields({ owner, expiresAt }) }),
+  });
+  if (!acquired.ok) {
+    const failure = await acquired.json().catch(() => null);
+    if ([409, 412].includes(acquired.status) || ["FAILED_PRECONDITION", "ALREADY_EXISTS", "ABORTED"].includes(failure?.error?.status)) throw new Error("OPERATION_BUSY");
+    throw new Error("OPERATION_LOCK_UNAVAILABLE");
+  }
+  const lease = await acquired.json();
+  const assertActive = () => { if (Date.now() >= expiresAt) throw new Error("OPERATION_LEASE_EXPIRED"); };
+  try {
+    return await operation(assertActive);
+  } finally {
+    // Only this acquisition can release the lease, including after an expired owner finishes late.
+    try {
+      const released = await firestoreFetch(`${path}?currentDocument.updateTime=${encodeURIComponent(lease.updateTime)}`, {
+        method: "PATCH", body: JSON.stringify({ fields: encodeFields({ owner, expiresAt: 0 }) }),
+      });
+      if (!released.ok && ![400, 409, 412].includes(released.status)) console.warn("OPERATION_LOCK_RELEASE_FAILED");
+    } catch { console.warn("OPERATION_LOCK_RELEASE_FAILED"); }
+  }
+}
+
 function encodeValue(value: unknown): any {
   if (value === undefined || value === null) return { nullValue: null };
   if (typeof value === "string") return { stringValue: value };

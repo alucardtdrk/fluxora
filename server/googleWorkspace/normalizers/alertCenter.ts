@@ -1,3 +1,4 @@
+import type { WorkspaceSecurityCategory } from "../../../shared/workspaceSecurity.js";
 import { getDetailedEvidenceExpiry, workspaceSecurityEventId } from "../config.js";
 import {
   MAX_WORKSPACE_SECURITY_METADATA_STRING_CHARACTERS,
@@ -81,7 +82,7 @@ function severityFor(alert: GoogleAlertCenterAlert): SecuritySeverity {
   return "medium";
 }
 
-function categoryFor(alert: GoogleAlertCenterAlert): string {
+function categoryFor(alert: GoogleAlertCenterAlert): WorkspaceSecurityCategory {
   const classification = `${alert.type} ${alert.source}`.toLowerCase();
   if (classification.includes("phishing") || classification.includes("malware") || classification.includes("gmail")) {
     return "email_security";

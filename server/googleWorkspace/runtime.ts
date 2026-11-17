@@ -1,3 +1,4 @@
+import { withFirestoreLease } from "../firestore.js";
 import { createGoogleWorkspaceTokenProvider } from "./auth.js";
 import { createGoogleWorkspaceClient, type GoogleWorkspaceClient } from "./client.js";
 import { collectAlertCenterEvidence, collectAlertCenterEvidenceBatch } from "./collectors/alertCenter.js";
@@ -22,6 +23,7 @@ function latestEventAt(events: readonly WorkspaceSecurityEvent[]): string | unde
 export function createGoogleWorkspaceSecuritySync(input: {
   readonly config: Pick<GoogleWorkspaceConfig, "customerId" | "domain">;
   readonly client: GoogleWorkspaceClient;
+  readonly assertActive?: () => void;
   readonly repository: Repository;
   readonly collectAlertCenter?: typeof collectAlertCenterEvidence;
   readonly collectAlertCenterBatch?: typeof collectAlertCenterEvidenceBatch;
@@ -62,6 +64,7 @@ export function createGoogleWorkspaceSecuritySync(input: {
           : await collectAlertsBatch({ client: input.client, customerId: input.config.customerId, lastSuccessfulEventAt: state.lastSuccessfulEventAt ?? undefined, now });
       const events = collected.events;
       const incomplete = current && "truncated" in collected && collected.truncated;
+      input.assertActive?.();
       const saved = await input.repository.saveSourceBatch({
         source,
         events,
@@ -97,7 +100,8 @@ export function createGoogleWorkspaceSecuritySync(input: {
         name: "directory_posture",
         run: async () => {
           const posture = await collectDirectory({ client: input.client, customerId: input.config.customerId, domain: input.config.domain, capturedAt: now() });
-          await input.repository.saveDirectoryPosture({ ...posture, id: "current" });
+          input.assertActive?.();
+        await input.repository.saveDirectoryPosture({ ...posture, id: "current" });
           return { collected: 1, persisted: 1 };
         },
       },
@@ -122,12 +126,14 @@ export function createGoogleWorkspaceSecuritySync(input: {
   ];
 
   const saveDiagnostics = async (summary: Awaited<ReturnType<typeof sourceSync.run>>) => {
+    input.assertActive?.();
     await Promise.all(Object.entries(summary.sources).filter(([source]) => source !== "directory_posture").map(([source, status]) => input.repository.saveSourceDiagnostics?.(source as WorkspaceSecuritySource, { status: status.status, received: status.received, collected: status.collected, persisted: status.persisted, safeError: status.safeError, httpStatus: status.httpStatus, completedAt: summary.finishedAt })));
   };
 
   const saveCurrentFindings = async () => {
     const events = await input.repository.listRecentEvents(new Date(now().getTime() - CORRELATION_WINDOW_MS));
     const findings = correlate(events, now());
+    input.assertActive?.();
     const saved = await input.repository.saveFindings(findings);
     return { generated: findings.length, persisted: saved.insertedOrUpdated };
   };
@@ -149,6 +155,7 @@ export function createGoogleWorkspaceSecuritySync(input: {
       if (window.start >= targetEnd) continue;
       try {
         const collected = await collectReportsBatch({ client: input.client, application: item.application, customerId: input.config.customerId, rangeStart: window.start, rangeEnd: window.end, startPageToken: state?.backfillPageToken ?? undefined, maxPages: 1, pageSize: Math.min(250, maxEvents - backfill.eventsCollected), now });
+        input.assertActive?.();
         const saved = await input.repository.saveSourceBatch({ source: item.source, events: collected.events, attemptedAt: now().toISOString(), backfill: { targetStart: targetStart.toISOString(), targetEnd: targetEnd.toISOString(), coveredThrough: (collected.truncated ? window.start : (collected.rangeEnd ?? window.end)).toISOString(), pageToken: collected.nextPageToken, pagesProcessed: (state?.backfillPagesProcessed ?? 0) + collected.pagesRead } });
         await input.repository.saveSourceDiagnostics?.(item.source, { status: collected.events.length ? "ok" : "empty", received: collected.recordsRead, collected: collected.events.length, persisted: saved.insertedOrUpdated, completedAt: now().toISOString() });
         backfill.windowsProcessed += 1;
@@ -158,6 +165,7 @@ export function createGoogleWorkspaceSecuritySync(input: {
       } catch {
         backfill.failedSources.push(item.source);
         backfill.requestsProcessed += 1;
+        input.assertActive?.();
         await input.repository.saveSourceDiagnostics?.(item.source, { status: "failure", collected: 0, persisted: 0, safeError: "unknown", completedAt: now().toISOString() });
       }
     }
@@ -189,6 +197,7 @@ export function createGoogleWorkspaceSecuritySync(input: {
     async runFullBatch(startIndex: number) {
       if (startIndex === fullSources.length) {
         const posture = await collectDirectory({ client: input.client, customerId: input.config.customerId, domain: input.config.domain, capturedAt: now() });
+        input.assertActive?.();
         await input.repository.saveDirectoryPosture({ ...posture, id: "current" });
         try { await saveCurrentFindings(); } catch { /* The posture result remains available when correlation fails. */ }
         return { status: "success" as const, startedAt: now().toISOString(), finishedAt: now().toISOString(), sources: { directory_posture: { status: "ok" as const, collected: 1, persisted: 1 } }, expiredEventsRemoved: 0, nextIndex: null };
@@ -214,6 +223,7 @@ export function createGoogleWorkspaceSecuritySync(input: {
       try {
         const events = await input.repository.listRecentEvents(new Date(now().getTime() - CORRELATION_WINDOW_MS));
         const findings = correlate(events, now());
+        input.assertActive?.();
         const saved = await input.repository.saveFindings(findings);
         return { ...summary, backfill, findings: { generated: findings.length, persisted: saved.insertedOrUpdated } };
       } catch {
@@ -224,37 +234,53 @@ export function createGoogleWorkspaceSecuritySync(input: {
 }
 
 export async function syncGoogleWorkspaceSecurity(startIndex = 0) {
-  const config = loadGoogleWorkspaceConfig();
-  const tokenProvider = createGoogleWorkspaceTokenProvider(config);
-  const client = createGoogleWorkspaceClient(tokenProvider);
-  const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository }).runFullBatch(startIndex);
-  await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
-  return result;
+  return withFirestoreLease("workspace-security", async assertActive => {
+    const config = loadGoogleWorkspaceConfig();
+    const tokenProvider = createGoogleWorkspaceTokenProvider(config);
+    const client = createGoogleWorkspaceClient(tokenProvider);
+    const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository, assertActive }).runFullBatch(startIndex);
+    assertActive();
+    await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
+    return result;
+  });
 }
 
 export async function continueGoogleWorkspaceSecurityBackfill() {
-  const config = loadGoogleWorkspaceConfig();
-  const tokenProvider = createGoogleWorkspaceTokenProvider(config);
-  const client = createGoogleWorkspaceClient(tokenProvider);
-  const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository }).continueBackfill();
-  await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
-  return result;
+  return withFirestoreLease("workspace-security", async assertActive => {
+    const config = loadGoogleWorkspaceConfig();
+    const tokenProvider = createGoogleWorkspaceTokenProvider(config);
+    const client = createGoogleWorkspaceClient(tokenProvider);
+    const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository, assertActive }).continueBackfill();
+    assertActive();
+    await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
+    return result;
+  });
 }
 
 export async function syncCurrentGoogleWorkspaceSecurity(sources?: readonly WorkspaceSecuritySource[]) {
-  const config = loadGoogleWorkspaceConfig();
-  const tokenProvider = createGoogleWorkspaceTokenProvider(config);
-  const client = createGoogleWorkspaceClient(tokenProvider);
-  const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository }).runCurrent(sources);
-  await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
-  return result;
+  return withFirestoreLease("workspace-security", async assertActive => {
+    const config = loadGoogleWorkspaceConfig();
+    const tokenProvider = createGoogleWorkspaceTokenProvider(config);
+    const client = createGoogleWorkspaceClient(tokenProvider);
+    const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository, assertActive }).runCurrent(sources);
+    assertActive();
+    await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
+    return result;
+  });
 }
 
 export async function syncDailyGoogleWorkspaceSecurity() {
-  const config = loadGoogleWorkspaceConfig();
-  const tokenProvider = createGoogleWorkspaceTokenProvider(config);
-  const client = createGoogleWorkspaceClient(tokenProvider);
-  const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository }).runDaily();
-  await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
-  return result;
+  return withFirestoreLease("workspace-security", async assertActive => {
+    const config = loadGoogleWorkspaceConfig();
+    const tokenProvider = createGoogleWorkspaceTokenProvider(config);
+    const client = createGoogleWorkspaceClient(tokenProvider);
+    const result = await createGoogleWorkspaceSecuritySync({ config, client, repository: googleWorkspaceRepository, assertActive }).runDaily();
+    assertActive();
+    await pruneExpiredWorkspaceEvents().catch(() => console.warn("Workspace security retention cleanup failed"));
+    return result;
+  }).catch(error => {
+    if (!(error instanceof Error) || error.message !== "OPERATION_BUSY") throw error;
+    const now = new Date().toISOString();
+    return { status: "skipped_locked" as const, startedAt: now, finishedAt: now, sources: {}, expiredEventsRemoved: 0 };
+  });
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createWorkspaceSecurityDashboard, createWorkspaceEventPage, getWorkspaceEvent } from "./dashboard.js";
+import type { WorkspaceEventCursor } from "../../shared/workspaceSecurity.js";
 import { WORKSPACE_SECURITY_EVENTS_COLLECTION } from "./repository.js";
 
 describe("Workspace security dashboard", () => {
@@ -68,15 +69,15 @@ describe("Workspace security dashboard", () => {
     expect(await getWorkspaceEvent("missing", async () => null)).toBeNull();
   });
   it("pages filtered events without losing later matches", async () => {
-    const records = Array.from({ length: 60 }, (_, index) => ({ id: `event-${index}`, source: index % 2 ? "login" : "drive", category: "identity", severity: "high", occurredAt: new Date("2026-09-23T10:00:00Z") }));
-    const listBatch = async (offset: number, limit: number) => records.slice(offset, offset + limit);
-    const first = await createWorkspaceEventPage({ offset: 0, source: "login", pageSize: 10 }, listBatch);
-    const second = await createWorkspaceEventPage({ offset: first.nextOffset!, source: "login", pageSize: 10 }, listBatch);
-    const third = await createWorkspaceEventPage({ offset: second.nextOffset!, source: "login", pageSize: 10 }, listBatch);
+    const records = Array.from({ length: 60 }, (_, index) => ({ id: `event-${index}`, _documentName: `projects/test/databases/(default)/documents/fluxora/data/workspace-security-events/event-${index}`, source: index % 2 ? "login" : "drive", category: "identity", severity: "high", occurredAt: new Date("2026-09-23T10:00:00Z") }));
+    const listBatch = async (cursor: WorkspaceEventCursor | null, limit: number) => { const offset = cursor ? records.findIndex(record => record._documentName === cursor.documentName) + 1 : 0; return records.slice(offset, offset + limit); };
+    const first = await createWorkspaceEventPage({ source: "login", pageSize: 10 }, listBatch);
+    const second = await createWorkspaceEventPage({ cursor: first.nextCursor, source: "login", pageSize: 10 }, listBatch);
+    const third = await createWorkspaceEventPage({ cursor: second.nextCursor, source: "login", pageSize: 10 }, listBatch);
     expect(first.events.map((event) => event.id)).toEqual(Array.from({ length: 10 }, (_, index) => `event-${index * 2 + 1}`));
     expect(second.events[0].id).toBe("event-21");
-    expect(first.nextOffset).toBe(20);
-    expect(third.nextOffset).toBeNull();
+    expect(first.nextCursor?.documentName).toMatch(/event-19$/);
+    expect(third.nextCursor).toBeNull();
   });
   it("maps safe event fields and derives dashboard totals", async () => {
     const dashboard = await createWorkspaceSecurityDashboard({
@@ -112,9 +113,9 @@ describe("Workspace security dashboard", () => {
   });
 
   it("does not count previously stored routine Drive reads as high severity", async () => {
-    const record = { id: "drive-read", source: "drive", type: "access_item_content", severity: "high", occurredAt: new Date("2026-09-23T10:00:00Z"), metadata: { visibility: "shared_externally" } };
+    const record = { id: "drive-read", _documentName: "projects/test/databases/(default)/documents/fluxora/data/workspace-security-events/drive-read", source: "drive", type: "access_item_content", severity: "high", occurredAt: new Date("2026-09-23T10:00:00Z"), metadata: { visibility: "shared_externally" } };
     const dashboard = await createWorkspaceSecurityDashboard({ listEvents: async () => [record], listFindings: async () => [], getPosture: async () => null }).load();
-    const page = await createWorkspaceEventPage({ offset: 0, severity: "high" }, async () => [record]);
+    const page = await createWorkspaceEventPage({ severity: "high" }, async () => [record]);
     expect(dashboard.summary.highOrCriticalEvents).toBe(0);
     expect(dashboard.events[0]?.severity).toBe("informational");
     expect(page.events).toHaveLength(0);
