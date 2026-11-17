@@ -1,3 +1,4 @@
+import { customPeriodBounds, type DashboardPeriod } from "../shared/dashboardPeriod.js";
 import { createHash } from "node:crypto";
 import { startOfBrazilDay } from "../shared/timezone.js";
 import {
@@ -11,7 +12,7 @@ import {
 } from "./firestore.js";
 import { getFluxoraCollectionPaths } from "./fluxoraFirestorePaths.js";
 
-export type ArchivePeriod = "today" | "7d" | "30d" | "90d" | "all";
+export type ArchivePeriod = DashboardPeriod;
 
 export type ArchivedExecutionNode = {
   nodeName?: string;
@@ -103,6 +104,8 @@ function readLimit() {
 }
 
 function periodCutoff(period: ArchivePeriod) {
+  const custom = customPeriodBounds(period);
+  if (custom) return new Date(custom.start).toISOString();
   if (period === "all") return null;
   if (period === "today") {
     return startOfBrazilDay().toISOString();
@@ -223,6 +226,12 @@ export async function listArchivedExecutions(period: ArchivePeriod, includeLegac
         value: { stringValue: cutoff },
       },
     };
+  }
+
+  const custom = customPeriodBounds(period);
+  if (custom) {
+    const upperBound = { fieldFilter: { field: { fieldPath: "startedAt" }, op: "LESS_THAN", value: { stringValue: new Date(custom.end).toISOString() } } };
+    structuredQuery.where = { compositeFilter: { op: "AND", filters: [structuredQuery.where, upperBound] } };
   }
 
   if (page?.errorsOnly) {

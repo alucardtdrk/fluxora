@@ -1,3 +1,4 @@
+import { formatCustomPeriod, type PresetPeriod } from "@shared/dashboardPeriod";
 import { useEffect, useState } from "react";
 import { AlertTriangle, ArrowLeft, BarChart3, Eye, RefreshCw, Timer, TrendingUp } from "lucide-react";
 import { Link } from "wouter";
@@ -16,7 +17,7 @@ import { PREFERENCES_UPDATED_EVENT, readPreferredPageSize, readPreferredRefreshS
 import { trpc } from "@/lib/trpc";
 
 type Period = DashboardPeriod;
-const periodLabels: Record<Period, string> = { today: "Hoje", "7d": "7 dias", "30d": "30 dias", "90d": "90 dias", all: "Todo o histórico" };
+const periodLabels: Record<PresetPeriod, string> = { today: "Hoje", "7d": "7 dias", "30d": "30 dias", "90d": "90 dias", all: "Todo o histórico" };
 
 export default function Insights() {
   return <AnalyticsPage />;
@@ -37,7 +38,7 @@ function Header({ title, description, period, setPeriod, refresh, loading }: { t
           <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <PeriodFilter value={period} options={(Object.keys(periodLabels) as Period[]).map((value) => [value, periodLabels[value]] as const)} onChange={setPeriod} />
+          <PeriodFilter value={period} options={(Object.keys(periodLabels) as PresetPeriod[]).map((value) => [value, periodLabels[value]] as const)} onChange={setPeriod} />
           <Button onClick={refresh} disabled={loading} aria-busy={loading} className="rounded-xl bg-primary text-primary-foreground"><RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />{loading ? "Atualizando…" : "Atualizar"}</Button>
         </div>
       </div>
@@ -162,7 +163,7 @@ function AnalyticsPage() {
                     </div>
                   </> : <Empty text="Nenhum workflow com execuções no período" />}
                 </>}
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3"><span className="text-xs text-muted-foreground">{periodLabels[period]}</span><Button asChild size="sm" className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-500 hover:to-violet-500"><Link href="/workflows">Ver workflows <span aria-hidden="true">→</span></Link></Button></div>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3"><span className="text-xs text-muted-foreground">{period.startsWith("custom:") ? formatCustomPeriod(period) : periodLabels[period as PresetPeriod]}</span><Button asChild size="sm" className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-500 hover:to-violet-500"><Link href="/workflows">Ver workflows <span aria-hidden="true">→</span></Link></Button></div>
               </CardContent>
             </Card>
           </div>

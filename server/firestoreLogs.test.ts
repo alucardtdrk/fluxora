@@ -27,6 +27,16 @@ it("queries today's archive from midnight in Brasilia even after the UTC date ch
   expect(JSON.stringify(firestore.query.mock.calls[0][0])).toContain("2026-11-05T03:00:00.000Z");
 });
 
+it("queries both bounds of a custom archive period before pagination", async () => {
+  firestore.get.mockResolvedValue({});
+  firestore.query.mockResolvedValue([]);
+  await listArchivedExecutions("custom:2026-11-01:2026-11-02", true);
+  expect(firestore.query.mock.calls[0][0].where).toEqual({ compositeFilter: { op: "AND", filters: [
+    { fieldFilter: { field: { fieldPath: "startedAt" }, op: "GREATER_THAN_OR_EQUAL", value: { stringValue: "2026-11-01T03:00:00.000Z" } } },
+    { fieldFilter: { field: { fieldPath: "startedAt" }, op: "LESS_THAN", value: { stringValue: "2026-11-03T03:00:00.000Z" } } },
+  ] } });
+});
+
 it("includes active executions beyond the first Firestore page without treating the archive as truncated", async () => {
   vi.stubEnv("FIRESTORE_READ_LIMIT", "1000");
   firestore.get.mockResolvedValue({ activeArchiveRunId: "current" });

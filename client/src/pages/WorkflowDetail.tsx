@@ -231,15 +231,18 @@ export default function WorkflowDetail() {
               {!advancedDetailAvailable ? null : <div className="grid items-start gap-6 xl:grid-cols-[1.4fr_.8fr]">
                 <WorkflowDiagram nodes={workflow.nodes} connections={workflow.connections} selectedNodeName={selectedNodeName} onSelectNode={setSelectedNodeName} />
                 <WorkflowNodePanel
+                  revision={workflowDetail.data!.workflow!.revision}
                   node={selectedNode}
                   canEdit={canOperate}
                   canUseAdvanced={canRestore}
-                  onSave={async ({ nodeName, changes, parameters, summary }) => {
-                    const result = await updateWorkflowNode.mutateAsync({ workflowId: id, nodeName, changes, parameters, summary });
+                  onSave={async ({ nodeName, changes, additions, parameters, summary, expectedVersion }) => {
+                    const result = await updateWorkflowNode.mutateAsync({ workflowId: id, nodeName, changes, additions, parameters, summary, expectedVersion });
                     if (result.status !== "ok") throw new Error(("message" in result && result.message) ? result.message : "Nao foi possivel salvar este node.");
-                    toast.success("Alteração enviada ao n8n com snapshot salvo no Firestore.");
+                    if (result.historyPending) toast.warning("Alteração aplicada no n8n; registro do histórico pendente. Não é necessário salvar novamente.");
+                    else toast.success("Alteração enviada ao n8n com snapshot salvo no Firestore.");
                     await workflowDetail.refetch();
                     setSelectedNodeName(nodeName);
+                    return result.workflow.revision;
                   }}
                 />
               </div>}
@@ -333,9 +336,10 @@ export default function WorkflowDetail() {
                 canRestore={canRestore}
                 historyConfigured={historyConfigured}
                 onRestore={async (snapshotId) => {
-                  const result = await restoreWorkflowVersion.mutateAsync({ workflowId: id, snapshotId });
+                  const result = await restoreWorkflowVersion.mutateAsync({ workflowId: id, snapshotId, expectedVersion: workflowDetail.data!.workflow!.revision });
                   if (result.status !== "ok") throw new Error(("message" in result && result.message) ? result.message : "Não foi possível restaurar esta versão.");
-                  toast.success("Workflow restaurado no n8n a partir do snapshot selecionado.");
+                  if (result.historyPending) toast.warning("Workflow restaurado; registro do histórico pendente. Não é necessário restaurar novamente.");
+                  else toast.success("Workflow restaurado no n8n a partir do snapshot selecionado.");
                   await workflowDetail.refetch();
                 }}
               />}

@@ -1,3 +1,4 @@
+import type { WorkspaceSecurityCategory } from "../../../shared/workspaceSecurity.js";
 import { getDetailedEvidenceExpiry, workspaceSecurityEventId } from "../config.js";
 import { isExcludedSuperadminPasswordReset } from "./alertCenter.js";
 import {
@@ -84,7 +85,7 @@ function severityFor(application: ReportsApplicationName, eventName: string, par
   return "informational";
 }
 
-function categoryFor(application: ReportsApplicationName): string {
+function categoryFor(application: ReportsApplicationName): WorkspaceSecurityCategory {
   if (application === "login") return "identity";
   if (application === "token") return "oauth";
   if (application === "drive") return "data_protection";

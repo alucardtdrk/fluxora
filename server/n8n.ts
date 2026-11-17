@@ -1,3 +1,4 @@
+import { customPeriodBounds, type DashboardPeriod } from "../shared/dashboardPeriod.js";
 import { createHash } from "node:crypto";
 import { BRAZIL_TIME_ZONE, brazilDateKey, startOfBrazilDay } from "../shared/timezone.js";
 import { z } from "zod";
@@ -15,7 +16,7 @@ const workflowSchema = z.object({
 });
 
 type N8nWorkflow = z.infer<typeof workflowSchema>;
-type Period = "today" | "7d" | "30d" | "90d" | "all";
+type Period = DashboardPeriod;
 type N8nExecution = {
   id?: string;
   workflowId?: string;
@@ -194,6 +195,8 @@ function errorStatus(error: unknown): Exclude<N8nStatus, "ok" | "not_configured"
 }
 
 function periodStart(period: Period) {
+  const custom = customPeriodBounds(period);
+  if (custom) return custom.start;
   if (period === "all") return null;
   if (period === "today") {
     return startOfBrazilDay().getTime();
@@ -207,7 +210,8 @@ function withinPeriod(item: N8nExecution, period: Period) {
   if (start === null) return true;
   if (!item.startedAt) return false;
   const ts = new Date(item.startedAt).getTime();
-  return Number.isFinite(ts) && ts >= start;
+  const custom = customPeriodBounds(period);
+  return Number.isFinite(ts) && ts >= start && (!custom || ts < custom.end);
 }
 
 function statusKind(status?: string) {
@@ -1124,9 +1128,12 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
 
     const chartDays = period === "today" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : period === "90d" ? 90 : 30;
     const today = startOfBrazilDay().getTime();
-    const chart = Array.from({ length: chartDays }, (_, index) => {
-      const date = new Date(today - (chartDays - 1 - index) * 86_400_000);
-      return { dateKey: brazilDateKey(date), day: index === chartDays - 1 ? "Hoje" : date.toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE, day: "2-digit", month: "2-digit" }), total: 0, sucesso: 0, erro: 0 };
+    const custom = customPeriodBounds(period);
+    const dates = custom
+      ? [...new Set([custom.startDate, custom.endDate, ...executions.flatMap(item => item.startedAt ? [brazilDateKey(new Date(item.startedAt))] : [])])].sort().map(date => new Date(`${date}T00:00:00-03:00`))
+      : Array.from({ length: chartDays }, (_, index) => new Date(today - (chartDays - 1 - index) * 86_400_000));
+    const chart = dates.map((date, index) => {
+      return { dateKey: brazilDateKey(date), day: !custom && index === chartDays - 1 ? "Hoje" : date.toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE, day: "2-digit", month: "2-digit" }), total: 0, sucesso: 0, erro: 0 };
     });
     executions.forEach((item) => {
       if (!item.startedAt) return;
