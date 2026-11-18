@@ -94,3 +94,8 @@ it("does not represent missing distribution data as measured zeroes", () => {
   expect(html).not.toContain('aria-label="Distribuição de 0 execuções por status"');
   expect(html).toContain("Distribuição indisponível");
 });
+
+it("summarizes other statuses without including successful executions", () => {
+  queries.overview.data.metrics = { executions: 45170, success: 45023, errors: 139, canceled: 8, running: 0, waiting: 0, successRate: 99.7 };
+  expect(render()).toContain('147</b> nos demais status');
+});
