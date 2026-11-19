@@ -5,8 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Home from "./Home";
 import { toast } from "sonner";
 
-const queries = vi.hoisted(() => ({ overview: {} as any, workflows: {} as any, refresh: undefined as undefined | (() => Promise<void>) }));
-vi.mock("@/lib/trpc", () => ({ trpc: { n8n: { overview: { useQuery: () => queries.overview }, workflows: { useQuery: () => queries.workflows } } } }));
+const queries = vi.hoisted(() => ({ overview: {} as any, workflows: {} as any, fetch: vi.fn(), setData: vi.fn(), refresh: undefined as undefined | (() => Promise<void>) }));
+vi.mock("@/lib/trpc", () => ({ trpc: { useUtils: () => ({ n8n: { overview: { fetch: queries.fetch, setData: queries.setData, cancel: vi.fn() } } }), n8n: { overview: { useQuery: () => queries.overview }, workflows: { useQuery: () => queries.workflows } } } }));
 vi.mock("@/_core/hooks/useAuth", () => ({ useAuth: () => ({ user: { role: "admin" } }) }));
 vi.mock("@/components/OperationsShell", () => ({ default: ({ children }: any) => children }));
 vi.mock("@/components/PeriodFilter", () => ({ default: () => null }));
@@ -16,8 +16,13 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 beforeEach(() => {
   vi.stubGlobal("React", React);
-  queries.overview = { data: { status: "ok", connected: true, metrics: { executions: 10, success: 9, errors: 1, successRate: 90, health: 90 }, chart: [], workflowStats: [] }, dataUpdatedAt: Date.now(), isPending: false, isError: false, isFetching: false, refetch: vi.fn() };
+  queries.overview = { data: { status: "ok", connected: true, collectedAt: new Date().toISOString(), metrics: { executions: 10, success: 9, errors: 1, successRate: 90, health: 90 }, chart: [], workflowStats: [] }, dataUpdatedAt: Date.now(), isPending: false, isError: false, isFetching: false, refetch: vi.fn() };
   queries.workflows = { data: { status: "ok", connected: true, items: [] }, isError: false, refetch: vi.fn() };
+  queries.fetch.mockImplementation(async () => {
+    const result = await queries.overview.refetch();
+    if (result.isError) throw new Error("Transport failure");
+    return result.data;
+  });
 });
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
 const render = () => renderToStaticMarkup(React.createElement(Router, { ssrPath: "/" }, React.createElement(Home)));
@@ -30,7 +35,7 @@ it("shows operational attention when executions failed", () => {
   const html = render();
   expect(html.includes("Tudo sob controle.")).toBe(false);
   expect(html.includes("Há falhas no período.")).toBe(true);
-  expect(html.includes("Última consulta bem-sucedida")).toBe(true);
+  expect(html.includes("Última coleta no n8n")).toBe(true);
 });
 
 it.each(["api_error", "not_configured"])("does not show zero as measured telemetry on %s", (status) => {
@@ -47,7 +52,7 @@ it("identifies retained data after a transport failure", () => {
 });
 
 it("identifies old restored telemetry while a new query is pending", () => {
-  queries.overview.dataUpdatedAt = Date.now() - 10 * 60_000;
+  queries.overview.data.collectedAt = new Date(Date.now() - 10 * 60_000).toISOString();
   queries.overview.isFetching = true;
   expect(render().includes("Dados desatualizados")).toBe(true);
 });
@@ -67,6 +72,13 @@ it("confirms refresh only after both queries succeed", async () => {
   queries.workflows.refetch.mockResolvedValue({ isError: false, data: queries.workflows.data });
   await queries.refresh!();
   expect(toast.success).toHaveBeenCalledWith("Dados atualizados");
+  expect(queries.fetch).toHaveBeenCalledWith(expect.objectContaining({ forceRefresh: true }), { staleTime: 0 });
+});
+
+it("does not treat a newly received cached response as a new collection", () => {
+  queries.overview.data.collectedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  queries.overview.dataUpdatedAt = Date.now();
+  expect(render()).toContain("Dados desatualizados");
 });
 
 it("does not confirm refresh when only the workflow query failed", async () => {

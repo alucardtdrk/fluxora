@@ -37,6 +37,14 @@ it("queries both bounds of a custom archive period before pagination", async () 
   ] } });
 });
 
+it("selects and returns the preserved error for incident grouping", async () => {
+  const error = { message: "Request timed out" };
+  firestore.query.mockResolvedValue([{ executionId: "failed", status: "error", error }]);
+  const result = await listArchivedExecutions("all", true);
+  expect(firestore.query.mock.calls[0][0].select.fields).toContainEqual({ fieldPath: "error" });
+  expect(result.items[0]).toMatchObject({ error });
+});
+
 it("includes active executions beyond the first Firestore page without treating the archive as truncated", async () => {
   vi.stubEnv("FIRESTORE_READ_LIMIT", "1000");
   firestore.get.mockResolvedValue({ activeArchiveRunId: "current" });

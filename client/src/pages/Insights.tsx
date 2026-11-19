@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import OperationsShell from "@/components/OperationsShell";
 import { MetricSkeleton } from "@/components/MetricSkeleton";
+import TelemetryStatus, { isTelemetryStale } from "@/components/TelemetryStatus";
 import ExecutionDetailDialog from "@/components/ExecutionDetailDialog";
 import IncidentAttentionCenter from "@/components/IncidentAttentionCenter";
 import { Badge } from "@/components/ui/badge";
@@ -74,6 +75,9 @@ function AnalyticsPage() {
   const { user } = useAuth();
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(() => readPreferredRefreshSeconds() * 1000);
   const [period, setPeriod] = useState<Period>(() => readScopedPeriod("analytics"));
+  const utils = trpc.useUtils();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const data = trpc.n8n.analytics.useQuery({ period }, { enabled: Boolean(user), retry: false, placeholderData: (previous) => previous, refetchInterval: period === "today" ? refreshIntervalMs : Math.max(refreshIntervalMs, 60_000) });
   const dashboard = data.data;
   const initialLoading = data.isPending && !data.data;
@@ -83,7 +87,27 @@ function AnalyticsPage() {
   const topVolumeWorkflows = rankedWorkflows.slice(0, 8);
   const highlightedWorkflow = topVolumeWorkflows.find((workflow) => workflow.id === selectedVolumeWorkflow) ?? topVolumeWorkflows[0];
 
-  const refresh = () => data.refetch().then(() => toast.success("Analytics atualizado"));
+  const maxAgeMs = Math.max(refreshIntervalMs, 60_000) * 2;
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshFailed(false);
+    try {
+      await utils.n8n.analytics.cancel({ period });
+      const result = await utils.n8n.analytics.fetch({ period, forceRefresh: true }, { staleTime: 0 });
+      utils.n8n.analytics.setData({ period }, result);
+      if (!result.summary || isTelemetryStale(result, maxAgeMs)) {
+        toast.error("Não foi possível atualizar o Analytics com dados completos e recentes.");
+        return;
+      }
+      toast.success("Analytics atualizado");
+    } catch {
+      setRefreshFailed(true);
+      toast.error("Não foi possível atualizar o Analytics. Tente novamente.");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  useEffect(() => setRefreshFailed(false), [dashboard?.collectedAt, period]);
   useEffect(() => saveScopedPeriod("analytics", period), [period]);
   useEffect(() => {
     const syncPreferences = () => {
@@ -99,11 +123,12 @@ function AnalyticsPage() {
       <div className="min-h-[calc(100vh-86px)] bg-background px-5 py-7 md:px-9">
         <div className="mx-auto max-w-[1450px]">
           <AnalyticsAlerts comparison={dashboard?.comparison} />
-          <Header title="Analytics" description="Tendências reais de volume, sucesso, duração e desempenho por workflow." period={period} setPeriod={setPeriod} refresh={refresh} loading={data.isFetching} />
+          <Header title="Analytics" description="Tendências reais de volume, sucesso, duração e desempenho por workflow." period={period} setPeriod={setPeriod} refresh={refresh} loading={data.isFetching || refreshing} />
+          <TelemetryStatus data={dashboard} error={refreshFailed || data.isError} placeholder={data.isPlaceholderData} loading={initialLoading} maxAgeMs={maxAgeMs} />
           <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-            <Metric title="Execuções" value={String(dashboard?.summary?.executions ?? 0)} loading={initialLoading} />
+            <Metric title="Execuções" value={dashboard?.summary ? String(dashboard.summary.executions) : "—"} loading={initialLoading} />
             <Metric title="Taxa de sucesso" value={dashboard?.summary?.successRate != null ? `${dashboard.summary.successRate}%` : "—"} loading={initialLoading} />
-            <Metric title="Falhas" value={String(dashboard?.summary?.errors ?? 0)} loading={initialLoading} />
+            <Metric title="Falhas" value={dashboard?.summary ? String(dashboard.summary.errors) : "—"} loading={initialLoading} />
             <Metric title="Tempo médio" value={dashboard?.summary?.averageDuration != null ? `${dashboard.summary.averageDuration}s` : "—"} loading={initialLoading} />
             <Metric title="Tempo típico" value={dashboard?.summary?.p50Duration != null ? `${dashboard.summary.p50Duration}s` : "—"} loading={initialLoading} />
             <Metric title="Tempo em execuções lentas" value={dashboard?.summary?.p95Duration != null ? `${dashboard.summary.p95Duration}s` : "—"} loading={initialLoading} />
@@ -112,7 +137,7 @@ function AnalyticsPage() {
           <div className="mt-6 grid gap-6 xl:grid-cols-[1.5fr_1fr]">
             <Card className="border-0 bg-card shadow-sm">
               <CardHeader><CardTitle className="flex items-center gap-2 text-base"><BarChart3 className="h-4 w-4 text-feedback-info" />Tendência de execuções</CardTitle>{period.startsWith("custom:") && <p className="text-xs text-muted-foreground">Até 90 dias: diário. Até um ano: semanal. Acima de um ano: mensal. Cada ponto indica o intervalo somado.</p>}</CardHeader>
-              <CardContent><div className="h-[300px]">{(dashboard?.trend?.length ?? 0) > 0 ? <ResponsiveContainer width="100%" height="100%"><AreaChart accessibilityLayer data={period.startsWith("custom:") ? dashboard?.trend : [...(dashboard?.trend ?? [])].reverse()} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>
+              <CardContent><div className="h-[300px]">{(dashboard?.trend?.length ?? 0) > 0 ? <ResponsiveContainer width="100%" height="100%"><AreaChart accessibilityLayer data={dashboard?.trend} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="analytics-total-gradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="var(--feedback-info)" stopOpacity={0.18} />
@@ -143,8 +168,8 @@ function AnalyticsPage() {
               <CardContent className="space-y-4">
                 {initialLoading ? <div className="h-64 animate-pulse rounded-xl bg-muted" aria-label="Carregando volumes" /> : <>
                   <dl className="grid grid-cols-2 gap-3">
-                    <div className="rounded-xl bg-muted/50 p-3"><dt className="text-xs text-muted-foreground">Execuções no período</dt><dd className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{totalWorkflowExecutions.toLocaleString("pt-BR")}</dd></div>
-                    <div className="rounded-xl bg-muted/50 p-3"><dt className="text-xs text-muted-foreground">Workflows com execuções</dt><dd className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{rankedWorkflows.length.toLocaleString("pt-BR")}</dd></div>
+                    <div className="rounded-xl bg-muted/50 p-3"><dt className="text-xs text-muted-foreground">Execuções no período</dt><dd className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{dashboard?.summary ? totalWorkflowExecutions.toLocaleString("pt-BR") : "—"}</dd></div>
+                    <div className="rounded-xl bg-muted/50 p-3"><dt className="text-xs text-muted-foreground">Workflows com execuções</dt><dd className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{dashboard?.summary ? rankedWorkflows.length.toLocaleString("pt-BR") : "—"}</dd></div>
                   </dl>
                   {highlightedWorkflow ? <>
                     <div className="rounded-xl bg-muted/40 px-3 pb-2 pt-3">
@@ -161,7 +186,7 @@ function AnalyticsPage() {
                       <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground"><span>{(highlightedWorkflow.executions / totalWorkflowExecutions * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% do volume</span><span>{highlightedWorkflow.successRate != null ? `${highlightedWorkflow.successRate.toLocaleString("pt-BR")}% de sucesso` : "Sucesso indisponível"}</span><span className={highlightedWorkflow.errors > 0 ? "font-medium text-feedback-error" : ""}>{highlightedWorkflow.errors.toLocaleString("pt-BR")} falha(s)</span></p>
                       <p className="mt-1 text-[10px] text-muted-foreground">Selecione uma barra para ver os detalhes.{rankedWorkflows.length > 8 ? " Exibindo os 8 maiores volumes." : ""}</p>
                     </div>
-                  </> : <Empty text="Nenhum workflow com execuções no período" />}
+                  </> : <Empty text={dashboard?.summary ? "Nenhum workflow com execuções no período" : "Dados de workflows indisponíveis"} />}
                 </>}
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3"><span className="text-xs text-muted-foreground">{period.startsWith("custom:") ? formatCustomPeriod(period) : periodLabels[period as PresetPeriod]}</span><Button asChild size="sm" className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-500 hover:to-violet-500"><Link href="/workflows">Ver workflows <span aria-hidden="true">→</span></Link></Button></div>
               </CardContent>
@@ -171,9 +196,9 @@ function AnalyticsPage() {
           <div className="mt-6"><ComparisonStrip comparison={dashboard?.comparison} loading={initialLoading} /></div>
 
           <div className="mb-6 grid gap-4 md:grid-cols-3">
-            <Metric title="Workflows com meta" value={String(dashboard?.sloSummary?.configured ?? 0)} loading={initialLoading} />
-            <Metric title="Dentro da meta" value={String(dashboard?.sloSummary?.met ?? 0)} loading={initialLoading} />
-            <Metric title="Fora da meta" value={String(dashboard?.sloSummary?.breached ?? 0)} loading={initialLoading} />
+            <Metric title="Workflows com meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.configured) : "—"} loading={initialLoading} />
+            <Metric title="Dentro da meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.met) : "—"} loading={initialLoading} />
+            <Metric title="Fora da meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.breached) : "—"} loading={initialLoading} />
           </div>
           <SloBudgetPanel workflows={dashboard?.workflowStats ?? []} loading={initialLoading} />
 
@@ -231,6 +256,9 @@ function ErrorsPage() {
   const { user } = useAuth();
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(() => readPreferredRefreshSeconds() * 1000);
   const [period, setPeriod] = useState<Period>(() => readScopedPeriod("errors"));
+  const utils = trpc.useUtils();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [errorPage, setErrorPage] = useState(1);
   const [errorPageSize, setErrorPageSize] = useState(() => readPreferredPageSize(50));
   const [selected, setSelected] = useState<string | null>(null);
@@ -241,7 +269,27 @@ function ErrorsPage() {
   const totalErrorPages = Math.max(1, Math.ceil(recentErrors.length / errorPageSize));
   const currentErrorPage = Math.min(errorPage, totalErrorPages);
   const visibleErrors = recentErrors.slice((currentErrorPage - 1) * errorPageSize, currentErrorPage * errorPageSize);
-  const refresh = () => data.refetch().then(() => toast.success("Erros atualizados"));
+  const maxAgeMs = Math.max(refreshIntervalMs, 60_000) * 2;
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshFailed(false);
+    try {
+      await utils.n8n.analytics.cancel({ period });
+      const result = await utils.n8n.analytics.fetch({ period, forceRefresh: true }, { staleTime: 0 });
+      utils.n8n.analytics.setData({ period }, result);
+      if (!result.summary || isTelemetryStale(result, maxAgeMs)) {
+        toast.error("Não foi possível atualizar os erros com dados completos e recentes.");
+        return;
+      }
+      toast.success("Erros atualizados");
+    } catch {
+      setRefreshFailed(true);
+      toast.error("Não foi possível atualizar os erros. Tente novamente.");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  useEffect(() => setRefreshFailed(false), [dashboard?.collectedAt, period]);
 
   useEffect(() => saveScopedPeriod("errors", period), [period]);
   useEffect(() => {
@@ -259,14 +307,15 @@ function ErrorsPage() {
     <OperationsShell>
       <div className="min-h-[calc(100vh-86px)] bg-background px-5 py-7 md:px-9">
         <div className="mx-auto max-w-[1450px]">
-          <Header title="Erros" description="Falhas reais, workflows críticos e acesso direto ao detalhe técnico da execução." period={period} setPeriod={(value) => { setPeriod(value); setErrorPage(1); }} refresh={refresh} loading={data.isFetching} />
-          <div className="grid gap-4 md:grid-cols-3"><Metric title="Falhas no período" value={String(dashboard?.summary?.errors ?? 0)} loading={initialLoading} /><Metric title="Taxa de sucesso" value={dashboard?.summary?.successRate != null ? `${dashboard.summary.successRate}%` : "—"} loading={initialLoading} /><Metric title="Workflows com falha" value={String((dashboard?.workflowStats ?? []).filter((workflow) => workflow.errors > 0).length)} loading={initialLoading} /></div>
+          <Header title="Erros" description="Falhas reais, workflows críticos e acesso direto ao detalhe técnico da execução." period={period} setPeriod={(value) => { setPeriod(value); setErrorPage(1); }} refresh={refresh} loading={data.isFetching || refreshing} />
+          <TelemetryStatus data={dashboard} error={refreshFailed || data.isError} placeholder={data.isPlaceholderData} loading={initialLoading} maxAgeMs={maxAgeMs} />
+          <div className="grid gap-4 md:grid-cols-3"><Metric title="Falhas no período" value={dashboard?.summary ? String(dashboard.summary.errors) : "—"} loading={initialLoading} /><Metric title="Taxa de sucesso" value={dashboard?.summary?.successRate != null ? `${dashboard.summary.successRate}%` : "—"} loading={initialLoading} /><Metric title="Workflows com falha" value={dashboard?.summary ? String((dashboard.workflowStats ?? []).filter((workflow) => workflow.errors > 0).length) : "—"} loading={initialLoading} /></div>
           <IncidentAttentionCenter incidents={(dashboard?.incidentGroups ?? []) as any[]} loading={initialLoading} />
           <div className="mt-6 grid gap-6 xl:grid-cols-[1.5fr_1fr]">
             <Card className="border-0 bg-card shadow-sm">
-              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><AlertTriangle className="h-4 w-4 text-feedback-error" />Falhas recentes</CardTitle></CardHeader>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><AlertTriangle className="h-4 w-4 text-feedback-error" />Falhas recentes</CardTitle>{dashboard?.summary && dashboard.summary.errors > recentErrors.length && <p className="text-xs text-muted-foreground">Lista limitada às {recentErrors.length} falhas mais recentes. O agrupamento considera todas as {dashboard.summary.errors} falhas do período.</p>}</CardHeader>
               <CardContent className="p-0">
-                <div className="divide-y">{visibleErrors.map((error) => <div key={error.id} className="grid gap-3 px-6 py-4 md:grid-cols-[1.5fr_.8fr_.5fr_auto] md:items-center"><div><p className="text-sm font-semibold">{error.sectionName || error.workflowName}</p><p className="mt-1 text-xs text-muted-foreground">Workflow: {error.workflowName} · #{error.id} · {error.startedAt ? new Date(error.startedAt).toLocaleString("pt-BR") : "—"}</p></div><Badge className="w-fit bg-feedback-error-surface text-feedback-error">Erro</Badge><span className="text-xs text-muted-foreground">{error.duration != null ? `${error.duration}s` : "—"}</span><Button variant="outline" size="sm" onClick={() => setSelected(error.id)}><Eye className="mr-2 h-3.5 w-3.5" />Ver detalhes</Button></div>)}{recentErrors.length === 0 && <Empty text={initialLoading ? "Carregando falhas..." : "Nenhuma falha neste período"} />}</div>
+                <div className="divide-y">{visibleErrors.map((error) => <div key={error.id} className="grid gap-3 px-6 py-4 md:grid-cols-[1.5fr_.8fr_.5fr_auto] md:items-center"><div><p className="text-sm font-semibold">{error.sectionName || error.workflowName}</p><p className="mt-1 text-xs text-muted-foreground">Workflow: {error.workflowName} · #{error.id} · {error.startedAt ? new Date(error.startedAt).toLocaleString("pt-BR") : "—"}</p></div><Badge className="w-fit bg-feedback-error-surface text-feedback-error">Erro</Badge><span className="text-xs text-muted-foreground">{error.duration != null ? `${error.duration}s` : "—"}</span><Button variant="outline" size="sm" onClick={() => setSelected(error.id)}><Eye className="mr-2 h-3.5 w-3.5" />Ver detalhes</Button></div>)}{recentErrors.length === 0 && <Empty text={initialLoading ? "Carregando falhas..." : dashboard?.summary ? "Nenhuma falha neste período" : "Não foi possível consultar as falhas"} />}</div>
                 {recentErrors.length > 0 ? <div className="flex flex-col gap-3 border-t px-6 py-4 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between"><span>Mostrando {(currentErrorPage - 1) * errorPageSize + 1}-{Math.min(currentErrorPage * errorPageSize, recentErrors.length)} de {recentErrors.length} falhas</span><div className="flex items-center gap-2"><Button variant="outline" size="sm" disabled={currentErrorPage <= 1} onClick={() => setErrorPage((value) => Math.max(1, value - 1))}>Anterior</Button><span>Página {currentErrorPage} de {totalErrorPages}</span><Button variant="outline" size="sm" disabled={currentErrorPage >= totalErrorPages} onClick={() => setErrorPage((value) => Math.min(totalErrorPages, value + 1))}>Próxima</Button></div></div> : null}
               </CardContent>
             </Card>

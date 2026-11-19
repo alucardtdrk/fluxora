@@ -35,6 +35,39 @@ function mockSource(items: unknown[]) {
   }), { status: 200 }));
 }
 
+it("groups every failure in the period while keeping the detail list bounded", async () => {
+  const startedAt = new Date().toISOString();
+  const items = Array.from({ length: 105 }, (_, index) => ({ id: String(index), workflowId: "wf", status: "error", startedAt, lastNodeExecuted: "Request", error: { message: index < 103 ? "Timeout" : "Access denied" } }));
+  archive.archiveConfigured.mockReturnValue(true);
+  archive.getArchiveSyncState.mockResolvedValue({ backfillComplete: true });
+  archive.listArchivedExecutions.mockResolvedValue({ items, truncated: false });
+  mockSource([]);
+  const { getN8nAnalytics } = await import("./n8n.js");
+  const result = await getN8nAnalytics("today");
+  expect(result.recentErrors).toHaveLength(100);
+  expect(result.incidentGroups.map(group => group.count).sort((a, b) => a - b)).toEqual([2, 103]);
+  expect(result.incidentGroups.reduce((sum, group) => sum + group.count, 0)).toBe(result.summary?.errors);
+});
+
+it("evaluates success targets before rounding and allows exactly three failures at 80 percent", async () => {
+  const { listWorkflowSlos } = await import("./observability.js");
+  vi.mocked(listWorkflowSlos).mockResolvedValueOnce([
+    { workflowId: "wf", enabled: true, successRateTarget: 80, p95TargetSeconds: 30 },
+    { workflowId: "strict", enabled: true, successRateTarget: 100, p95TargetSeconds: 30 },
+    { workflowId: "slow", enabled: true, successRateTarget: 100, p95TargetSeconds: 1 },
+  ] as any);
+  mockSource([
+    ...Array.from({ length: 15 }, (_, i) => ({ id: `a${i}`, workflowId: "wf", status: i < 12 ? "success" : "error", startedAt: new Date().toISOString() })),
+    ...Array.from({ length: 2501 }, (_, i) => ({ id: `b${i}`, workflowId: "strict", status: i ? "success" : "error", startedAt: new Date().toISOString() })),
+    { id: "slow", workflowId: "slow", status: "success", startedAt: new Date(Date.now() - 1049).toISOString(), stoppedAt: new Date().toISOString(), duration: 1 },
+  ]);
+  const { getN8nAnalytics } = await import("./n8n.js");
+  const result = await getN8nAnalytics("today");
+  expect(result.workflowStats.find(row => row.id === "wf")).toMatchObject({ sloStatus: "met", errorBudget: { allowedFailures: 3, remainingFailures: 0, consumedPercent: 100 } });
+  expect(result.workflowStats.find(row => row.id === "strict")).toMatchObject({ successRate: 100, sloStatus: "breached" });
+  expect(result.workflowStats.find(row => row.id === "slow")).toMatchObject({ p95Duration: 1, sloStatus: "breached" });
+});
+
 it("queries only the dashboard period and keeps archived history cached across refreshes", async () => {
   vi.useFakeTimers();
   archive.archiveConfigured.mockReturnValue(true);
@@ -66,6 +99,29 @@ it("reuses dashboard calculations, separates filters, expires and invalidates re
   n8n.invalidateN8nCache();
   expect(await n8n.getN8nAnalytics("all")).not.toBe(analytics);
   expect(fetch).toHaveBeenCalled();
+});
+
+it("keeps the source collection time when cached results are returned", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-18T15:00:00Z"));
+  mockSource([{ id: "1", workflowId: "wf", status: "success", startedAt: new Date().toISOString() }]);
+  const n8n = await import("./n8n.js");
+  const first = await n8n.getN8nOverview("today");
+  expect(first.collectedAt).toBe("2026-11-18T15:00:00.000Z");
+  vi.advanceTimersByTime(10_000);
+  expect((await n8n.getN8nOverview("today")).collectedAt).toBe(first.collectedAt);
+  expect((await n8n.getN8nOverview("today", [], 24, true)).collectedAt).toBe("2026-11-18T15:00:10.000Z");
+});
+
+it("reports the archived snapshot date separately from the live collection", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-18T15:00:00Z"));
+  archive.archiveConfigured.mockReturnValue(true);
+  archive.getArchiveSyncState.mockResolvedValue({ backfillComplete: true, lastSuccessfulSyncAt: "2026-11-18T03:00:00Z" });
+  archive.listArchivedExecutions.mockResolvedValue({ items: [], truncated: false });
+  mockSource([]);
+  const n8n = await import("./n8n.js");
+  expect(await n8n.getN8nAnalytics("7d")).toMatchObject({ collectedAt: "2026-11-18T15:00:00.000Z", archiveSyncedAt: "2026-11-18T03:00:00Z" });
 });
 
 it("reuses normalized history without changing pagination, search or totals", async () => {

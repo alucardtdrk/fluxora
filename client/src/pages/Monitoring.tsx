@@ -15,7 +15,7 @@ function MonitoringMetric({ icon: Icon, label, loading, children }: { icon: Luci
 
 function MonitoringAlerts({ loading, metrics, errorThreshold, inactiveHours }: { loading: boolean; metrics: any; errorThreshold: number; inactiveHours: number }) {
   if (loading || !metrics) return null;
-  const completed = (metrics.success ?? 0) + (metrics.errors ?? 0) + (metrics.canceled ?? 0);
+  const completed = (metrics.success ?? 0) + (metrics.errors ?? 0);
   const failureRate = completed ? (metrics.errors / completed) * 100 : 0;
   const alerts = [
     failureRate >= errorThreshold ? `A taxa de falhas está em ${failureRate.toFixed(1)}%, acima do limite configurado de ${errorThreshold}%.` : null,

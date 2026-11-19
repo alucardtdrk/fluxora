@@ -57,7 +57,7 @@ export const appRouter = router({
     continueBackfill: adminProcedure.mutation(({ ctx }) => audited({ action: "google_workspace.backfill", category: "configuration", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "google_workspace", summary: "Avançou o histórico de segurança do Google Workspace" }, () => continueGoogleWorkspaceSecurityBackfill())),
   }),
   n8n: router({
-    overview: protectedProcedure.input(z.object({ period: periodSchema.default("7d"), workflowIds: z.array(z.string()).default([]), inactiveHours: z.number().int().min(1).max(168).default(24) })).query(({ input }) => getN8nOverview(input.period, input.workflowIds, input.inactiveHours)),
+    overview: protectedProcedure.input(z.object({ period: periodSchema.default("7d"), workflowIds: z.array(z.string()).default([]), inactiveHours: z.number().int().min(1).max(168).default(24), forceRefresh: z.boolean().optional() })).query(({ input }) => getN8nOverview(input.period, input.workflowIds, input.inactiveHours, input.forceRefresh)),
     workflows: protectedProcedure.query(() => listN8nWorkflows()),
     workflowDetail: protectedProcedure.input(z.object({ id: z.string().min(1) })).query(({ input }) => getN8nWorkflowDetail(input.id)),
     executions: protectedProcedure.query(() => listN8nExecutions()),
@@ -71,7 +71,7 @@ export const appRouter = router({
       await recordAuditEventSafe({ action: "execution.details_view", category: "data", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "execution", targetId: input.id, summary: `Consultou os detalhes técnicos da execução #${input.id}` });
       return result;
     }),
-    analytics: protectedProcedure.input(z.object({ period: periodSchema.default("7d") })).query(({ input }) => getN8nAnalytics(input.period)),
+    analytics: protectedProcedure.input(z.object({ period: periodSchema.default("7d"), forceRefresh: z.boolean().optional() })).query(({ input }) => getN8nAnalytics(input.period, input.forceRefresh)),
     slos: protectedProcedure.query(() => listWorkflowSlos()),
     saveSlo: adminProcedure.input(z.object({ workflowId: z.string().min(1), workflowName: z.string().max(160).optional(), enabled: z.boolean(), successRateTarget: z.number().min(0).max(100), p95TargetSeconds: z.number().positive().max(86400) })).mutation(({ input, ctx }) => audited({ action: "slo.save", category: "configuration", actor: ctx.user.email, actorRole: ctx.user.role, targetType: "workflow", targetId: input.workflowId, targetName: input.workflowName, summary: `Atualizou a meta operacional de ${input.workflowName || input.workflowId}`, after: input }, () => saveWorkflowSlo(input, ctx.user.email))),
     runbooks: protectedProcedure.query(() => listWorkflowRunbooks()),
