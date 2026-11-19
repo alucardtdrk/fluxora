@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import OperationsShell from "@/components/OperationsShell";
 import { MetricSkeleton } from "@/components/MetricSkeleton";
+import TelemetryStatus, { isTelemetryStale } from "@/components/TelemetryStatus";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,18 +31,16 @@ export default function Home() {
   const [period, setPeriod] = useState<Period>(() => readScopedPeriod("home"));
   const [focusIds, setFocusIds] = useState<string[]>(() => readFocusWorkflows());
   const workflows = trpc.n8n.workflows.useQuery(undefined, { enabled: Boolean(user), retry: false });
+  const utils = trpc.useUtils();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const overview = trpc.n8n.overview.useQuery({ period, workflowIds: focusIds }, { enabled: Boolean(user), retry: false, placeholderData: (previous) => previous, refetchInterval: period === "today" ? refreshIntervalMs : Math.max(refreshIntervalMs, 60_000) });
   const m = overview.data?.metrics;
   const initialLoading = overview.isPending && !overview.data;
-  const scope = JSON.stringify([period, focusIds]);
-  const currentData = overview.data?.status === "ok" && overview.data.connected && Boolean(m) && !overview.isError && !overview.isPlaceholderData;
-  const [lastSuccess, setLastSuccess] = useState<{ scope: string; at: number } | null>(null);
-  const lastSuccessfulAt = currentData ? overview.dataUpdatedAt : lastSuccess?.scope === scope ? lastSuccess.at : null;
-  const staleData = Boolean(m) && (!currentData || Date.now() - (lastSuccessfulAt ?? 0) > Math.max(refreshIntervalMs, 60_000) * 2 || workflows.isError || (workflows.data && workflows.data.status !== "ok"));
-
-  useEffect(() => {
-    if (currentData && overview.dataUpdatedAt) setLastSuccess({ scope, at: overview.dataUpdatedAt });
-  }, [currentData, overview.dataUpdatedAt, scope]);
+  const maxAgeMs = Math.max(refreshIntervalMs, 60_000) * 2;
+  const workflowError = workflows.isError || Boolean(workflows.data && workflows.data.status !== "ok");
+  const staleData = Boolean(m) && (refreshFailed || overview.isError || overview.isPlaceholderData || workflowError || isTelemetryStale(overview.data, maxAgeMs));
+  useEffect(() => setRefreshFailed(false), [overview.data?.collectedAt, period, focusIds]);
 
   useEffect(() => saveFocusWorkflows(focusIds), [focusIds]);
   useEffect(() => saveScopedPeriod("home", period), [period]);
@@ -70,15 +69,22 @@ export default function Home() {
   };
   const removeFocus = (id: string) => setFocusIds((value) => value.filter((x) => x !== id));
   const refresh = async () => {
+    setRefreshing(true);
+    setRefreshFailed(false);
     try {
-      const [nextOverview, nextWorkflows] = await Promise.all([overview.refetch(), workflows.refetch()]);
-      if (nextOverview.isError || nextWorkflows.isError || nextOverview.data?.status !== "ok" || !nextOverview.data.connected || !nextOverview.data.metrics || nextWorkflows.data?.status !== "ok" || !nextWorkflows.data.connected) {
+      await utils.n8n.overview.cancel({ period, workflowIds: focusIds });
+      const [nextOverview, nextWorkflows] = await Promise.all([utils.n8n.overview.fetch({ period, workflowIds: focusIds, forceRefresh: true }, { staleTime: 0 }), workflows.refetch()]);
+      utils.n8n.overview.setData({ period, workflowIds: focusIds }, nextOverview);
+      if (nextWorkflows.isError || nextOverview.status !== "ok" || !nextOverview.connected || !nextOverview.metrics || isTelemetryStale(nextOverview, maxAgeMs) || nextWorkflows.data?.status !== "ok" || !nextWorkflows.data.connected) {
         toast.error("Não foi possível atualizar todos os dados. Verifique a conexão e tente novamente.");
         return;
       }
       toast.success("Dados atualizados");
     } catch {
+      setRefreshFailed(true);
       toast.error("Não foi possível atualizar os dados. Tente novamente.");
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -101,14 +107,9 @@ export default function Home() {
   });
 
   return <OperationsShell><div className="mx-auto max-w-[1480px] px-5 py-7 md:px-9">
-    <div className="mb-8 flex flex-col justify-between gap-5 xl:flex-row xl:items-end"><div><span className="rounded-full bg-feedback-info-surface px-3 py-1 text-[10px] font-bold uppercase tracking-[.14em] text-feedback-info">Live operations</span><h2 className="mt-4 text-[42px] font-semibold tracking-[-.06em] text-foreground">{initialLoading ? "Carregando visão geral." : !m ? "Dados indisponíveis" : staleData ? "Dados desatualizados" : (m.errors ?? 0) > 0 ? "Há falhas no período." : "Visão geral das automações."}</h2><p className="mt-2 text-sm text-muted-foreground">Monitore o ambiente e escolha os workflows que quer manter em foco.</p></div><div className="flex flex-wrap gap-2"><PeriodFilter value={period} options={periods} onChange={setPeriod} /><Button onClick={refresh} variant="outline" disabled={overview.isFetching || workflows.isFetching} aria-busy={overview.isFetching || workflows.isFetching}><RefreshCw className={`mr-2 h-4 w-4 ${overview.isFetching || workflows.isFetching ? "animate-spin" : ""}`} />{overview.isFetching || workflows.isFetching ? "Atualizando…" : "Atualizar"}</Button></div></div>
+    <div className="mb-8 flex flex-col justify-between gap-5 xl:flex-row xl:items-end"><div><span className="rounded-full bg-feedback-info-surface px-3 py-1 text-[10px] font-bold uppercase tracking-[.14em] text-feedback-info">Live operations</span><h2 className="mt-4 text-[42px] font-semibold tracking-[-.06em] text-foreground">{initialLoading ? "Carregando visão geral." : !m ? "Dados indisponíveis" : staleData ? "Dados desatualizados" : (m.errors ?? 0) > 0 ? "Há falhas no período." : "Visão geral das automações."}</h2><p className="mt-2 text-sm text-muted-foreground">Monitore o ambiente e escolha os workflows que quer manter em foco.</p></div><div className="flex flex-wrap gap-2"><PeriodFilter value={period} options={periods} onChange={setPeriod} /><Button onClick={refresh} variant="outline" disabled={refreshing || overview.isFetching || workflows.isFetching} aria-busy={refreshing || overview.isFetching || workflows.isFetching}><RefreshCw className={`mr-2 h-4 w-4 ${refreshing || overview.isFetching || workflows.isFetching ? "animate-spin" : ""}`} />{refreshing || overview.isFetching || workflows.isFetching ? "Atualizando…" : "Atualizar"}</Button></div></div>
 
-    <div className="mb-5 space-y-2 text-sm" role="status" aria-live="polite">
-      {!initialLoading && !m && <p className="text-feedback-error">Não foi possível consultar os indicadores. Verifique a conexão e tente atualizar.</p>}
-      {staleData && <p className="text-feedback-error">Dados desatualizados ou incompletos. Os indicadores disponíveis podem ser de uma consulta anterior.</p>}
-      {overview.isPlaceholderData && <p className="text-muted-foreground">Aplicando os filtros. Os indicadores anteriores permanecem visíveis durante a consulta.</p>}
-      {lastSuccessfulAt ? <p className="text-muted-foreground">Última consulta bem-sucedida: {new Date(lastSuccessfulAt).toLocaleString("pt-BR", { timeZone: BRAZIL_TIME_ZONE })}</p> : null}
-    </div>
+    <TelemetryStatus data={overview.data} error={refreshFailed || overview.isError || workflowError} placeholder={overview.isPlaceholderData} loading={initialLoading} maxAgeMs={maxAgeMs} />
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-7"><Metric title="Workflows" value={m ? String(m.workflows) : "—"} detail={focusIds.length ? "em foco" : "total"} icon={Workflow} loading={initialLoading} /><Metric title="Ativos" value={m ? String(m.active) : "—"} detail="em operação" icon={Zap} loading={initialLoading} /><Metric title="Execuções" value={m ? String(total) : "—"} detail={period.startsWith("custom:") ? formatCustomPeriod(period) : periods.find((p) => p[0] === period)?.[1] || ""} icon={Play} loading={initialLoading} /><Metric title="Sucesso" value={m?.successRate != null ? `${m.successRate}%` : "—"} detail="taxa" icon={CheckCircle2} loading={initialLoading} /><Metric title="Erros" value={m ? String(errorCount) : "—"} detail="falhas" icon={XCircle} loading={initialLoading} /><Metric title="Em andamento" value={m ? String(running) : "—"} detail="agora" icon={Clock3} loading={initialLoading} /><Metric title="n8n" value={initialLoading ? "Verificando…" : overview.data?.connected ? "Online" : "Offline"} detail={initialLoading ? "conectando" : "conexão"} icon={DatabaseZap} /></div>
 
     <div className="mt-6 grid gap-6 xl:grid-cols-[1.5fr_1fr]"><Card className="border-0 bg-card shadow-sm"><CardHeader><CardTitle className="text-base">Execuções por período</CardTitle><p className="text-xs text-muted-foreground">{focusIds.length ? `Gráfico filtrado por ${focusIds.length} workflow(s) em foco.` : "Todos os workflows consultados."}</p>{period.startsWith("custom:") && <p className="text-xs text-muted-foreground">Até 90 dias: diário. Até um ano: semanal. Acima de um ano: mensal. Cada ponto indica o intervalo somado.</p>}</CardHeader><CardContent><div className="h-[280px]">{(overview.data?.chart?.length ?? 0) > 0 ? <ResponsiveContainer width="100%" height="100%"><AreaChart accessibilityLayer data={overview.data?.chart} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>

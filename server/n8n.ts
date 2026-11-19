@@ -35,6 +35,13 @@ type N8nExecution = {
 };
 
 type Page<T> = { data?: T[]; nextCursor?: string | null };
+type ExecutionSnapshot = {
+  items: N8nExecution[];
+  truncated: boolean;
+  collectedAt?: string | null;
+  archiveSyncedAt?: string | null;
+  archiveUnavailable?: boolean;
+};
 export type N8nStatus = "ok" | "not_configured" | "unauthorized" | "api_error";
 
 
@@ -184,10 +191,12 @@ async function fetchAllPages<T>(path: string): Promise<{ items: T[]; truncated: 
 }
 
 function durationInSeconds(item: N8nExecution) {
-  if (typeof (item as any).duration === "number") return (item as any).duration;
-  if (!item.startedAt || !item.stoppedAt) return null;
-  const duration = (new Date(item.stoppedAt).getTime() - new Date(item.startedAt).getTime()) / 1000;
-  return Number.isFinite(duration) && duration >= 0 ? Number(duration.toFixed(1)) : null;
+  if (item.startedAt && item.stoppedAt) {
+    const duration = (Date.parse(item.stoppedAt) - Date.parse(item.startedAt)) / 1000;
+    if (Number.isFinite(duration) && duration >= 0) return duration;
+  }
+  const stored = (item as any).duration;
+  return typeof stored === "number" && Number.isFinite(stored) && stored >= 0 ? stored : null;
 }
 
 function errorStatus(error: unknown): Exclude<N8nStatus, "ok" | "not_configured"> {
@@ -370,7 +379,7 @@ async function loadWorkflows() {
   });
 }
 
-async function fetchExecutionsForPeriod(period: Period, includeData = false): Promise<{ items: N8nExecution[]; truncated: boolean }> {
+async function fetchExecutionsForPeriod(period: Period, includeData = false): Promise<ExecutionSnapshot> {
   const items: N8nExecution[] = [];
   let cursor: string | null | undefined;
   let page = 0;
@@ -393,7 +402,7 @@ async function fetchExecutionsForPeriod(period: Period, includeData = false): Pr
     }
   } while (cursor && page < pageLimit);
 
-  return { items, truncated: Boolean(cursor) };
+  return { items, truncated: Boolean(cursor), collectedAt: new Date().toISOString() };
 }
 
 
@@ -936,7 +945,11 @@ export async function preserveN8nExecutionDetails(batchSize?: number) {
 
 async function loadArchivedExecutions(period: Period, includeLegacy = false) {
   const scope = includeLegacy ? "all-stored" : "active";
-  return cached(`archive:executions:${scope}:${period}`, 5 * 60_000, 0, () => listArchivedExecutions(period, includeLegacy));
+  return cached(`archive:executions:${scope}:${period}`, 5 * 60_000, 0, async () => {
+    const state = await getArchiveSyncState();
+    const archive = await listArchivedExecutions(period, includeLegacy);
+    return { ...archive, archiveSyncedAt: state.lastSuccessfulSyncAt ?? null };
+  });
 }
 
 async function loadLiveExecutions(period: Period) {
@@ -960,7 +973,7 @@ function mergeExecutions(archived: N8nExecution[], live: N8nExecution[]) {
   });
 }
 
-async function loadConsolidatedExecutions(backfillComplete: boolean, period: Period) {
+async function loadConsolidatedExecutions(backfillComplete: boolean, period: Period): Promise<ExecutionSnapshot> {
   // During the initial import, older executions may still exist only in n8n.
   // Once reconciliation is complete, the archive owns the long-term history
   // and only today's live data is needed to keep in-progress rows current.
@@ -968,7 +981,7 @@ async function loadConsolidatedExecutions(backfillComplete: boolean, period: Per
   const archive = await loadArchivedExecutions(period, true);
   const live = await loadLiveExecutions(livePeriod).catch((error) => {
     console.error("n8n live executions unavailable; using Firestore archive", { error: error instanceof Error ? error.name : "unknown" });
-    return { items: [] as N8nExecution[], truncated: true };
+    return { items: [] as N8nExecution[], truncated: true, collectedAt: null };
   });
   const items = mergeExecutions(archive.items as N8nExecution[], live.items);
   console.info("Fluxora consolidated executions loaded", {
@@ -983,10 +996,12 @@ async function loadConsolidatedExecutions(backfillComplete: boolean, period: Per
   return {
     items,
     truncated: archive.truncated || live.truncated,
+    collectedAt: live.collectedAt,
+    archiveSyncedAt: archive.archiveSyncedAt,
   };
 }
 
-async function loadExecutions(includeData = false, period: Period = "all") {
+async function loadExecutions(includeData = false, period: Period = "all"): Promise<ExecutionSnapshot> {
   const ttl = period === "today" ? 15_000 : period === "all" ? 30_000 : 25_000;
 
   // Firestore and n8n are always merged by execution ID. This keeps the totals
@@ -1011,7 +1026,8 @@ async function loadExecutions(includeData = false, period: Period = "all") {
     }
   }
 
-  return cached(`executions:${includeData ? "data" : "summary"}:${period}`, ttl, 2 * 60_000, () => fetchExecutionsForPeriod(period, includeData));
+  const live = await cached(`executions:${includeData ? "data" : "summary"}:${period}`, ttl, 2 * 60_000, () => fetchExecutionsForPeriod(period, includeData));
+  return { ...live, archiveUnavailable: archiveConfigured() && !includeData };
 }
 
 function aggregate(workflows: N8nWorkflow[], executions: N8nExecution[]) {
@@ -1063,14 +1079,19 @@ export function summarizeDurations(durations: number[]) {
 
 type TrendSummaryPoint = { total: number; success: number; errors: number };
 
-function customExecutionTrend(period: Period, executions: N8nExecution[], incomplete: boolean) {
-  const bounds = customPeriodBounds(period);
-  if (!bounds) return null;
+function executionTrend(period: Period, executions: N8nExecution[], incomplete: boolean) {
   if (incomplete) return [];
   const day = 86_400_000;
+  const custom = customPeriodBounds(period);
+  const first = period === "all" ? executions.reduce((earliest, item) => {
+    const time = Date.parse(item.startedAt || "");
+    return Number.isFinite(time) ? Math.min(earliest, time) : earliest;
+  }, Infinity) : periodStart(period);
+  if (!custom && (first === null || !Number.isFinite(first))) return [];
+  const bounds = custom ?? { start: startOfBrazilDay(new Date(first!)).getTime(), end: startOfBrazilDay().getTime() + day };
   const days = (bounds.end - bounds.start) / day;
   const monthly = days > 366;
-  const step = days > 90 ? 7 : 1;
+  const step = days > 90 && period !== "90d" ? 7 : 1;
   const label = (time: number) => new Date(time).toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE });
   const rows: { date: string; total: number; success: number; errors: number }[] = [];
   const monthIndices = new Map<string, number>();
@@ -1080,7 +1101,7 @@ function customExecutionTrend(period: Period, executions: N8nExecution[], incomp
     nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1, 1);
     const end = Math.min(bounds.end, monthly ? nextMonth.getTime() : start + step * day);
     monthIndices.set(key.slice(0, 7), rows.length);
-    rows.push({ date: days <= 90 ? label(start) : `${label(start)} a ${label(end - day)}`, total: 0, success: 0, errors: 0 });
+    rows.push({ date: !monthly && step === 1 ? label(start) : `${label(start)} a ${label(end - day)}`, total: 0, success: 0, errors: 0 });
     start = end;
   }
   for (const item of executions) {
@@ -1105,7 +1126,7 @@ export function summarizeTrendComparison(rows: TrendSummaryPoint[]) {
     const success = items.reduce((sum, item) => sum + item.success, 0);
     const errors = items.reduce((sum, item) => sum + item.errors, 0);
     const completed = success + errors;
-    return { total, errors, successRate: completed ? Number(((success / completed) * 100).toFixed(1)) : null };
+    return { total, errors, successRate: completed ? (success / completed) * 100 : null };
   };
   const previous = summarize(rows.slice(0, midpoint));
   const recent = summarize(rows.slice(midpoint));
@@ -1113,14 +1134,15 @@ export function summarizeTrendComparison(rows: TrendSummaryPoint[]) {
   return {
     executionsDelta: delta(recent.total, previous.total),
     errorsDelta: delta(recent.errors, previous.errors),
-    successRateDelta: previous.successRate !== null && recent.successRate !== null ? Number((recent.successRate - previous.successRate).toFixed(1)) : null,
+    successRateDelta: previous.successRate !== null && recent.successRate !== null ? Number((recent.successRate - previous.successRate).toFixed(2)) : null,
     previous,
     recent,
   };
 }
 
-export async function getN8nOverview(period: Period = "7d", workflowIds: string[] = [], inactiveHours = 24) {
+export async function getN8nOverview(period: Period = "7d", workflowIds: string[] = [], inactiveHours = 24, forceRefresh = false) {
   getConfig();
+  if (forceRefresh) invalidateN8nCache();
   const key = `dashboard:overview:${JSON.stringify([period, [...workflowIds].sort(), inactiveHours])}`;
   const result = await cached(key, 30_000, 30_000, () => calculateN8nOverview(period, workflowIds, inactiveHours));
   if (result.status !== "ok" || !result.connected) invalidateCache(key);
@@ -1144,7 +1166,7 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
     const running = executions.filter((item) => statusKind(item.status) === "running").length;
     const waiting = executions.filter((item) => statusKind(item.status) === "waiting").length;
     const canceled = executions.filter((item) => statusKind(item.status) === "canceled").length;
-    const completed = success + errors + canceled;
+    const completed = success + errors;
     const successRate = completed ? Math.round((success / completed) * 1000) / 10 : null;
     const durations = executions.map(durationInSeconds).filter((value): value is number => value !== null);
     const durationSummary = summarizeDurations(durations);
@@ -1160,25 +1182,14 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
     }
     const inactiveActiveWorkflows = selectedWorkflows.filter((workflow) => workflow.active && (latestExecutionByWorkflow.get(workflow.id) ?? 0) < inactiveBefore).length;
 
-    const chartDays = period === "today" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : period === "90d" ? 90 : 30;
-    const today = startOfBrazilDay().getTime();
-    const custom = customPeriodBounds(period);
-    const dates = Array.from({ length: chartDays }, (_, index) => new Date(today - (chartDays - 1 - index) * 86_400_000));
-    const chart = dates.map((date, index) => {
-      return { dateKey: brazilDateKey(date), day: !custom && index === chartDays - 1 ? "Hoje" : date.toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE, day: "2-digit", month: "2-digit" }), total: 0, sucesso: 0, erro: 0 };
-    });
-    executions.forEach((item) => {
-      if (!item.startedAt) return;
-      const point = chart.find((entry) => entry.dateKey === brazilDateKey(new Date(item.startedAt as string)));
-      if (!point) return;
-      point.total += 1;
-      if (statusKind(item.status) === "success") point.sucesso += 1;
-      if (statusKind(item.status) === "error") point.erro += 1;
-    });
+    const todayLabel = new Date().toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE });
 
     return {
       status: "ok" as const,
       connected: workflowResult.status === "fulfilled",
+      collectedAt: executionPage.collectedAt ?? null,
+      archiveSyncedAt: executionPage.archiveSyncedAt,
+      archiveUnavailable: executionPage.archiveUnavailable,
       metrics: {
         workflows: selectedWorkflows.length || new Set(executions.map((item) => item.workflowId).filter(Boolean)).size,
         active: selectedWorkflows.filter((item) => item.active).length,
@@ -1197,7 +1208,7 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
         inactiveActiveWorkflows,
         inactiveHours: inactiveHoursLimit,
       },
-      chart: customExecutionTrend(period, executions, executionPage.truncated)?.map(row => ({ day: row.date.includes(" a ") ? row.date : row.date.slice(0, 5), total: row.total, sucesso: row.success, erro: row.errors })) ?? chart.map(({ dateKey, ...point }) => point),
+      chart: executionTrend(period, executions, executionPage.truncated).map(row => ({ day: !period.startsWith("custom:") && row.date === todayLabel ? "Hoje" : row.date.includes(" a ") ? row.date : row.date.slice(0, 5), total: row.total, sucesso: row.success, erro: row.errors })),
       workflowStats: aggregate(selectedWorkflows, executions),
       truncated: executionPage.truncated,
     };
@@ -1435,8 +1446,9 @@ export function summarizeDailyExecutions(executions: readonly { startedAt?: stri
   const errors = recent.filter((execution) => statusKind(execution.status) === "error").length;
   return { executions: recent.length, success, errors, others: recent.length - success - errors, successRate: success + errors ? Number((success / (success + errors) * 100).toFixed(1)) : null, workflows: new Set(recent.map((execution) => execution.workflowId).filter(Boolean)).size };
 }
-export async function getN8nAnalytics(period: Period = "7d") {
+export async function getN8nAnalytics(period: Period = "7d", forceRefresh = false) {
   getConfig();
+  if (forceRefresh) invalidateN8nCache();
   const key = `dashboard:analytics:${period}`;
   const result = await cached(key, 30_000, 30_000, () => calculateN8nAnalytics(period));
   if (result.status !== "ok" || !result.connected) invalidateCache(key);
@@ -1464,13 +1476,21 @@ async function calculateN8nAnalytics(period: Period) {
       rows.push(item);
       executionsByWorkflow.set(workflowId, rows);
     }
-    const stats = aggregate(workflows, executions).filter((item) => item.executions > 0 || alertRuleMap.has(item.id)).map((item) => {
+    const historicalWorkflows = new Map(workflows.map(workflow => [workflow.id, workflow]));
+    for (const execution of executions) {
+      const id = execution.workflowId || "unknown";
+      if (!historicalWorkflows.has(id)) historicalWorkflows.set(id, {
+        id, name: execution.workflowName || `Workflow sem cadastro (${id})`, active: false, tags: [], nodes: [],
+      });
+    }
+    const stats = aggregate(Array.from(historicalWorkflows.values()), executions.map(item => item.workflowId ? item : { ...item, workflowId: "unknown" })).filter((item) => item.executions > 0 || alertRuleMap.has(item.id)).map((item) => {
       const slo = sloMap.get(item.id);
       const alertRule = alertRuleMap.get(item.id);
-      const successOk = !slo?.enabled || item.successRate == null || item.successRate >= slo.successRateTarget;
-      const latencyOk = !slo?.enabled || item.p95Duration == null || item.p95Duration <= slo.p95TargetSeconds;
       const completedExecutions = item.success + item.errors;
-      const allowedFailures = slo?.enabled ? Math.max(0, Math.floor(completedExecutions * (1 - slo.successRateTarget / 100))) : null;
+      const successOk = !slo?.enabled || !completedExecutions || item.success * 100 >= slo.successRateTarget * completedExecutions;
+      const measuredDurations = (executionsByWorkflow.get(item.id) ?? []).map(durationInSeconds).filter((value): value is number => value !== null);
+      const latencyOk = !slo?.enabled || !measuredDurations.length || measuredDurations.filter(value => value <= slo.p95TargetSeconds).length >= Math.ceil(measuredDurations.length * 0.95);
+      const allowedFailures = slo?.enabled ? Math.max(0, Math.floor(completedExecutions * (100 - slo.successRateTarget) / 100 + Number.EPSILON * completedExecutions)) : null;
       const remainingFailures = allowedFailures == null ? null : Math.max(0, allowedFailures - item.errors);
       const errorBudgetConsumed = allowedFailures == null ? null : allowedFailures === 0 ? (item.errors > 0 ? 100 : 0) : Number(Math.min(100, (item.errors / allowedFailures) * 100).toFixed(1));
       const rows = [...(executionsByWorkflow.get(item.id) || [])].sort((a, b) => new Date(b.startedAt || 0).getTime() - new Date(a.startedAt || 0).getTime());
@@ -1479,7 +1499,8 @@ async function calculateN8nAnalytics(period: Period) {
       const lastExecutionAt = rows[0]?.startedAt || null;
       const inactiveHours = lastExecutionAt ? Math.max(0, (Date.now() - new Date(lastExecutionAt).getTime()) / 3600000) : null;
       const alertReasons: string[] = [];
-      if (alertRule?.enabled && item.successRate != null && (100 - item.successRate) >= alertRule.failureRateThreshold) alertReasons.push(`Taxa de falha em ${(100 - item.successRate).toFixed(1)}%`);
+      const failureRate = completedExecutions ? item.errors / completedExecutions * 100 : null;
+      if (alertRule?.enabled && failureRate != null && failureRate >= alertRule.failureRateThreshold) alertReasons.push(`Taxa de falha em ${failureRate.toFixed(1)}%`);
       if (alertRule?.enabled && failureStreak >= alertRule.consecutiveFailures) alertReasons.push(`${failureStreak} falhas consecutivas`);
       if (alertRule?.enabled && inactiveHours != null && inactiveHours >= alertRule.inactivityHours) alertReasons.push(`Sem execução há ${Math.floor(inactiveHours)} horas`);
       return { ...item, slo: slo || null, sloStatus: !slo?.enabled ? "not_configured" as const : successOk && latencyOk ? "met" as const : "breached" as const, errorBudget: slo?.enabled ? { allowedFailures, remainingFailures, consumedPercent: errorBudgetConsumed } : null, alertRule: alertRule || null, alertReasons, failureStreak, lastExecutionAt };
@@ -1489,19 +1510,10 @@ async function calculateN8nAnalytics(period: Period) {
     const durations = executions.map(durationInSeconds).filter((value): value is number => value !== null);
     const durationSummary = summarizeDurations(durations);
     const completed = success + errors.length;
-    const trendMap = new Map<string, { date: string; total: number; success: number; errors: number }>();
-    executions.forEach((item) => {
-      if (!item.startedAt) return;
-      const date = new Date(item.startedAt).toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE });
-      const row = trendMap.get(date) ?? { date, total: 0, success: 0, errors: 0 };
-      row.total += 1;
-      if (statusKind(item.status) === "success") row.success += 1;
-      if (statusKind(item.status) === "error") row.errors += 1;
-      trendMap.set(date, row);
-    });
     const recentErrors = errors.slice(0, 100).map((item) => ({ ...normalizeExecution(item, names), lastNodeExecuted: (item as any).lastNodeExecuted ?? null, error: (item as any).error ?? null }));
     const incidentStates = new Map((incidentStateResult.status === "fulfilled" ? incidentStateResult.value : []).map((state) => [state.fingerprint, state]));
-    const incidentGroups = Array.from(recentErrors.reduce((groups, item) => {
+    const incidentGroups = Array.from(errors.reduce((groups, execution) => {
+      const item = { ...normalizeExecution(execution, names), lastNodeExecuted: execution.lastNodeExecuted ?? null, error: (execution as any).error ?? null };
       const fingerprint = incidentFingerprint({ workflowId: item.workflowId, node: item.lastNodeExecuted || item.sectionName, error: item.error });
       const cause = item.lastNodeExecuted || item.sectionName || item.workflowName;
       const errorMessage = normalizeErrorSignature(item.error);
@@ -1537,11 +1549,14 @@ async function calculateN8nAnalytics(period: Period) {
       const workflowTotalMs = workflowNodeTime.get(row.workflowId) || 0;
       return { workflowId: row.workflowId, workflowName: row.workflowName, nodeName: row.nodeName, runs: row.runs, errors: row.errors, errorRate: Number(((row.errors / row.runs) * 100).toFixed(1)), averageMs: duration.average, p50Ms: duration.p50, p95Ms: duration.p95, totalMs, workflowTimeShare: workflowTotalMs ? Number(((totalMs / workflowTotalMs) * 100).toFixed(1)) : 0, outputItems: row.outputItems };
     }).sort((a, b) => b.errors - a.errors || Number(b.p95Ms || 0) - Number(a.p95Ms || 0));
-    const trend = customExecutionTrend(period, executions, executionPage.truncated) ?? Array.from(trendMap.values()).reverse();
+    const trend = executionTrend(period, executions, executionPage.truncated);
     const configuredAlerts = stats.filter((item) => item.alertRule?.enabled);
     return {
       status: "ok" as const,
       connected: workflowResult.status === "fulfilled",
+      collectedAt: executionPage.collectedAt ?? null,
+      archiveSyncedAt: executionPage.archiveSyncedAt,
+      archiveUnavailable: executionPage.archiveUnavailable,
       summary: {
         executions: executions.length,
         success,

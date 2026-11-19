@@ -14,6 +14,12 @@ beforeEach(() => {
 });
 
 describe("n8n server integration", () => {
+  it("preserves small percentage-point changes before rounding", () => {
+    expect(summarizeTrendComparison([
+      { total: 10000, success: 9972, errors: 28 },
+      { total: 10000, success: 9966, errors: 34 },
+    ])?.successRateDelta).toBe(-0.06);
+  });
   it("keeps today's executions and chart on the Brasilia calendar after UTC midnight", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-11-06T02:03:33Z"));

@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { customPeriodBounds, isDashboardPeriod, formatCustomPeriod } from "../shared/dashboardPeriod.js";
+import { customPeriodBounds, isDashboardPeriod, formatCustomPeriod, type DashboardPeriod } from "../shared/dashboardPeriod.js";
 import { getN8nOverview, getN8nAnalytics, listN8nExecutionsPage, invalidateN8nCache } from "./n8n.js";
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); invalidateN8nCache(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers(); invalidateN8nCache(); });
 
 it("includes the whole final day in Brasilia, including a one-day range", () => {
   expect(customPeriodBounds("custom:2026-11-01:2026-11-01")).toMatchObject({ start: Date.parse("2026-11-01T03:00:00Z"), end: Date.parse("2026-11-02T03:00:00Z") });
@@ -36,7 +36,29 @@ it("filters overview, analytics, errors and executions at both date boundaries",
   expect(page.items.map(item => item.id).sort()).toEqual(["1", "2"]);
 });
 
-async function customCharts(period: `custom:${string}:${string}`, times: string[], incomplete = false) {
+it("reconciles October totals with workflows missing from the current catalog", async () => {
+  vi.stubEnv("FIREBASE_PROJECT_ID", "");
+  vi.stubEnv("FIREBASE_CLIENT_EMAIL", "");
+  vi.stubEnv("FIREBASE_PRIVATE_KEY", "");
+  vi.stubEnv("N8N_BASE_URL", "https://october.example.test");
+  vi.stubEnv("N8N_API_KEY", "test-only");
+  const executions = [
+    { id: "1", workflowId: "wf", status: "success", startedAt: "2026-10-01T03:00:00Z" },
+    { id: "2", workflowId: "removed", workflowName: "Historical workflow", status: "error", startedAt: "2026-11-01T02:59:59.999Z" },
+    { id: "3", status: "success", startedAt: "2026-10-17T03:00:00Z" },
+    { id: "4", workflowId: "wf", status: "error", startedAt: "2026-11-01T03:00:00Z" },
+    { id: "5", workflowId: "wf", status: "error", startedAt: "2026-10-01T02:59:59.999Z" },
+  ];
+  vi.stubGlobal("fetch", vi.fn(async url => Response.json({ data: String(url).includes("/workflows") ? [{ id: "wf", name: "Current workflow", active: true }] : executions })));
+  const analytics = await getN8nAnalytics("custom:2026-10-01:2026-10-31");
+  expect(analytics.summary).toMatchObject({ executions: 3, success: 2, errors: 1 });
+  expect(analytics.workflowStats.reduce((sum, row) => sum + row.executions, 0)).toBe(3);
+  expect(analytics.workflowStats.reduce((sum, row) => sum + row.errors, 0)).toBe(1);
+  expect(analytics.workflowStats).toEqual(expect.arrayContaining([expect.objectContaining({ id: "removed", name: "Historical workflow", errors: 1 })]));
+  expect(analytics.comparison).toMatchObject({ previous: { total: 1 }, recent: { total: 2 }, successRateDelta: -50 });
+});
+
+async function customCharts(period: DashboardPeriod, times: string[], incomplete = false) {
   vi.stubEnv("FIREBASE_PROJECT_ID", "");
   vi.stubEnv("FIREBASE_CLIENT_EMAIL", "");
   vi.stubEnv("FIREBASE_PRIVATE_KEY", "");
@@ -49,6 +71,36 @@ async function customCharts(period: `custom:${string}:${string}`, times: string[
     : { data: times.map((startedAt, index) => ({ id: String(index), workflowId: "wf", status: index % 2 ? "error" : "success", startedAt })), ...(incomplete ? { nextCursor: "more" } : {}) })));
   return { overview: await getN8nOverview(period), analytics: await getN8nAnalytics(period) };
 }
+
+it("keeps the partial first day of rolling periods in both charts", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-18T15:00:00Z"));
+  const { overview, analytics } = await customCharts("7d", ["2026-11-18T14:00:00Z", "2026-11-11T16:00:00Z"]);
+  expect(overview.metrics?.executions).toBe(2);
+  expect(overview.chart.reduce((sum, row) => sum + row.total, 0)).toBe(2);
+  expect(analytics.trend.reduce((sum, row) => sum + row.total, 0)).toBe(2);
+  expect(analytics.trend[0].date).toBe("11/11/2026");
+  expect(analytics.trend.at(-1)?.date).toBe("18/11/2026");
+});
+
+it("includes executions older than thirty days when plotting all history", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-18T15:00:00Z"));
+  const { overview, analytics } = await customCharts("all", ["2026-11-18T14:00:00Z", "2026-01-01T03:00:00Z"]);
+  expect(overview.metrics?.executions).toBe(2);
+  expect(overview.chart.reduce((sum, row) => sum + row.total, 0)).toBe(2);
+  expect(analytics.trend.reduce((sum, row) => sum + row.total, 0)).toBe(2);
+  expect(analytics.trend[0].date).toContain("01/01/2026");
+});
+
+it("keeps the ninety-day preset daily including its partial first day", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-18T15:00:00Z"));
+  const { overview } = await customCharts("90d", [new Date(Date.now() - 90 * 86400_000 + 60_000).toISOString()]);
+  expect(overview.chart).toHaveLength(91);
+  expect(overview.chart[0].total).toBe(1);
+  expect(overview.chart.reduce((sum, row) => sum + row.total, 0)).toBe(overview.metrics?.executions);
+});
 
 it("fills intermediate custom dates and keeps both charts chronological", async () => {
   const { overview, analytics } = await customCharts("custom:2026-11-01:2026-11-04", ["2026-11-04T03:00:00Z", "2026-11-01T03:00:00Z"]);
