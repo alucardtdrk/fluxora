@@ -31,6 +31,14 @@ it("links the automation health card to analytics without a browser", () => {
   expect(render()).toContain('href="/analytics"');
 });
 
+it("shows historical workflows in the complete selection without marking them inactive", () => {
+  queries.overview.data.workflowStats = [{ id: "migrated", name: "Migrated workflow", active: false, historical: true, executions: 1, errors: 0, successRate: 100 }];
+  const html = render();
+  expect(html).toContain("Migrated workflow");
+  expect(html).toContain("Histórico · fora do n8n atual");
+  expect(html).toContain("Todos, incluindo históricos");
+});
+
 it("shows operational attention when executions failed", () => {
   const html = render();
   expect(html.includes("Tudo sob controle.")).toBe(false);

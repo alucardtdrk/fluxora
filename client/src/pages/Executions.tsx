@@ -84,6 +84,7 @@ export default function Executions() {
     { enabled: Boolean(user), retry: false, placeholderData: (previous) => previous },
   );
   const workflows = trpc.n8n.workflows.useQuery(undefined, { enabled: Boolean(user), retry: false });
+  const workflowOptions = executions.data?.workflowOptions ?? (workflows.data?.items ?? []).map(item => ({ id: item.id, name: item.name, historical: false }));
   const refreshing = executions.isFetching || workflows.isFetching;
   const items = executions.data?.items ?? [];
   const total = executions.data?.total ?? 0;
@@ -178,8 +179,8 @@ export default function Executions() {
                     <Select value={workflowId} onValueChange={change(setWorkflowId)}>
                       <SelectTrigger className="h-11 w-full min-w-0 max-w-full overflow-hidden text-left [&>span]:block [&>span]:min-w-0 [&>span]:truncate"><SelectValue placeholder="Todos os workflows" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">Todos os workflows</SelectItem>
-                        {(workflows.data?.items ?? []).map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}
+                        <SelectItem value="all">Todos, incluindo históricos</SelectItem>
+                        {workflowOptions.map(item => <SelectItem key={item.id} value={item.id}>{item.name}{item.historical ? " · Histórico" : ""}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>

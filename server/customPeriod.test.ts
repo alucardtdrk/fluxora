@@ -56,6 +56,40 @@ it("reconciles October totals with workflows missing from the current catalog", 
   expect(analytics.workflowStats.reduce((sum, row) => sum + row.errors, 0)).toBe(1);
   expect(analytics.workflowStats).toEqual(expect.arrayContaining([expect.objectContaining({ id: "removed", name: "Historical workflow", errors: 1 })]));
   expect(analytics.comparison).toMatchObject({ previous: { total: 1 }, recent: { total: 2 }, successRateDelta: -50 });
+  const overview = await getN8nOverview("custom:2026-10-01:2026-10-31");
+  expect(overview.metrics).toMatchObject({ executions: 3, workflows: 3, errors: 1 });
+  expect(overview.workflowStats).toEqual(expect.arrayContaining([expect.objectContaining({ id: "removed", historical: true, executions: 1 })]));
+  expect(overview.workflowOptions).toEqual(expect.arrayContaining([
+    { id: "wf", name: "Current workflow", historical: false },
+    { id: "removed", name: "Historical workflow", historical: true },
+  ]));
+  const selected = await getN8nOverview("custom:2026-10-01:2026-10-31", ["removed"]);
+  expect(selected.metrics).toMatchObject({ workflows: 1, active: 0, executions: 1, errors: 1 });
+  expect(selected.workflowStats).toEqual([expect.objectContaining({ id: "removed", historical: true, executions: 1 })]);
+  const page = await listN8nExecutionsPage({ period: "custom:2026-10-01:2026-10-31", page: 1, pageSize: 10, workflowId: "removed" });
+  expect(page.total).toBe(1);
+  expect(page.items[0].id).toBe("2");
+  expect(page.workflowOptions).toEqual(expect.arrayContaining([{ id: "removed", name: "Historical workflow", historical: true }]));
+});
+
+it("offers only historical workflows with executions in the selected period", async () => {
+  vi.stubEnv("FIREBASE_PROJECT_ID", "");
+  vi.stubEnv("FIREBASE_CLIENT_EMAIL", "");
+  vi.stubEnv("FIREBASE_PRIVATE_KEY", "");
+  vi.stubEnv("N8N_BASE_URL", "https://historical-filter.example.test");
+  vi.stubEnv("N8N_API_KEY", "test-only");
+  const executions = [
+    { id: "recent", workflowId: "wf", workflowName: "Older name", status: "success", startedAt: "2026-11-18T12:00:00Z" },
+    { id: "old", workflowId: "migrated", workflowName: "Migrated workflow", status: "error", startedAt: "2026-10-10T12:00:00Z" },
+  ];
+  vi.stubGlobal("fetch", vi.fn(async url => Response.json({ data: String(url).includes("/workflows") ? [{ id: "wf", name: "Current name", active: true }] : executions })));
+  const october = await getN8nOverview("custom:2026-10-01:2026-10-31");
+  expect(october.workflowOptions).toEqual([
+    { id: "wf", name: "Current name", historical: false },
+    { id: "migrated", name: "Migrated workflow", historical: true },
+  ]);
+  const november = await getN8nOverview("custom:2026-11-01:2026-11-30");
+  expect(november.workflowOptions).toEqual([{ id: "wf", name: "Current name", historical: false }]);
 });
 
 async function customCharts(period: DashboardPeriod, times: string[], incomplete = false) {
@@ -119,12 +153,14 @@ it("groups long ranges weekly, retaining partial last weeks and exact totals", a
   expect(overview.chart[0]).toMatchObject({ day: "01/01/2026 a 07/01/2026", total: 2, sucesso: 1, erro: 1 });
   expect(analytics.trend.at(-1)).toMatchObject({ date: "02/04/2026 a 02/04/2026", total: 1 });
   expect(analytics.trend.reduce((sum, row) => sum + row.total, 0)).toBe(3);
+  expect(analytics.comparison).toMatchObject({ previous: { startDate: "2026-01-01", endDate: "2026-02-18" }, recent: { startDate: "2026-02-19", endDate: "2026-04-02" } });
 });
 it("groups very long ranges monthly across years and leap days", async () => {
   const { overview, analytics } = await customCharts("custom:2024-02-28:2025-03-02", ["2024-02-29T03:00:00Z", "2025-03-02T03:00:00Z"]);
   expect(overview.chart).toHaveLength(14);
   expect(analytics.trend[0]).toMatchObject({ date: "28/02/2024 a 29/02/2024", total: 1 });
   expect(analytics.trend.at(-1)).toMatchObject({ date: "01/03/2025 a 02/03/2025", total: 1 });
+  expect(analytics.comparison).toMatchObject({ previous: { startDate: "2024-02-28", endDate: "2024-08-31" }, recent: { startDate: "2024-09-01", endDate: "2025-03-02" } });
 });
 it("does not invent zeroes when the custom query is incomplete", async () => {
   const { overview, analytics } = await customCharts("custom:2026-11-01:2026-11-03", ["2026-11-03T03:00:00Z"], true);

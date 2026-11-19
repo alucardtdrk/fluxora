@@ -1,6 +1,6 @@
 import { formatCustomPeriod, type PresetPeriod } from "@shared/dashboardPeriod";
 import { useEffect, useState } from "react";
-import { AlertTriangle, ArrowLeft, BarChart3, Eye, RefreshCw, Timer, TrendingUp } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, ArrowRightLeft, BarChart3, CalendarDays, CheckCircle2, Clock3, Eye, Gauge, Play, RefreshCw, Target, Timer, TrendingUp, Workflow, XCircle, type LucideIcon } from "lucide-react";
 import { Link } from "wouter";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
@@ -51,6 +51,8 @@ type PeriodComparison = {
   executionsDelta: number | null;
   errorsDelta: number | null;
   successRateDelta: number | null;
+  previous: { total: number; errors: number; successRate: number | null; startDate: string | null; endDate: string | null };
+  recent: { total: number; errors: number; successRate: number | null; startDate: string | null; endDate: string | null };
 };
 
 function AnalyticsAlerts({ comparison }: { comparison?: PeriodComparison | null }) {
@@ -65,10 +67,38 @@ function AnalyticsAlerts({ comparison }: { comparison?: PeriodComparison | null 
 
 function ComparisonStrip({ comparison, loading }: { comparison?: PeriodComparison | null; loading: boolean }) {
   if (!loading && !comparison) return null;
-  const value = (amount: number | null | undefined, suffix = "%") => amount == null ? "Sem base" : `${amount > 0 ? "+" : ""}${amount.toLocaleString("pt-BR")}${suffix}`;
-  const percentagePoints = (amount: number | null | undefined) => amount == null ? "Sem base" : `${amount > 0 ? "+" : ""}${amount.toLocaleString("pt-BR")} ${Math.abs(amount) === 1 ? "ponto percentual" : "pontos percentuais"}`;
-  const tone = (amount: number | null | undefined, inverse = false) => amount == null ? "text-muted-foreground" : (amount > 0) !== inverse ? "text-feedback-error" : "text-feedback-success";
-  return <Card className="mb-6 border-0 bg-feedback-info-surface shadow-sm"><CardContent className="grid gap-4 p-5 md:grid-cols-[1.4fr_repeat(3,1fr)] md:items-center"><div><p className="text-sm font-semibold text-foreground">Comparação dentro do período</p><p className="mt-1 text-xs text-muted-foreground">Metade mais recente versus a metade anterior.</p></div><div><p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Execuções</p><p className={`mt-1 text-lg font-semibold ${tone(comparison?.executionsDelta)}`}>{loading ? "…" : value(comparison?.executionsDelta)}</p></div><div><p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Falhas</p><p className={`mt-1 text-lg font-semibold ${tone(comparison?.errorsDelta)}`}>{loading ? "…" : value(comparison?.errorsDelta)}</p></div><div><p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Taxa de sucesso</p><p className={`mt-1 text-lg font-semibold ${tone(comparison?.successRateDelta, true)}`}>{loading ? "…" : percentagePoints(comparison?.successRateDelta)}</p></div></CardContent></Card>;
+  const date = (value: string) => value.split("-").reverse().join("/");
+  const range = (part: PeriodComparison["previous"] | undefined) => part?.startDate && part.endDate ? `${date(part.startDate)} a ${date(part.endDate)}` : "Datas indisponíveis";
+  const number = (value: number | null | undefined, rate = false) => value == null ? "Sem base" : `${value.toLocaleString("pt-BR", { maximumFractionDigits: rate ? 4 : 0 })}${rate ? "%" : ""}`;
+  const metrics = [
+    { title: "Execuções", icon: BarChart3, delta: comparison?.executionsDelta, previous: comparison?.previous.total, recent: comparison?.recent.total, rate: false, neutral: true, inverse: false },
+    { title: "Falhas", icon: XCircle, delta: comparison?.errorsDelta, previous: comparison?.previous.errors, recent: comparison?.recent.errors, rate: false, neutral: false, inverse: false },
+    { title: "Taxa de sucesso", icon: CheckCircle2, delta: comparison?.successRateDelta, previous: comparison?.previous.successRate, recent: comparison?.recent.successRate, rate: true, neutral: false, inverse: true },
+  ];
+  return (
+    <Card className="mb-6 overflow-hidden border-0 bg-card shadow-sm">
+      <CardContent className="p-5 md:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-feedback-info-surface text-feedback-info"><ArrowRightLeft className="size-4" aria-hidden="true" /></span><div><h3 className="text-base font-semibold">Evolução dentro do período</h3><p className="mt-1 text-xs text-muted-foreground">Parte mais recente em relação à primeira parte do intervalo selecionado.</p></div></div>
+          <span className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground"><CalendarDays className="size-3.5" aria-hidden="true" />Mesmo período selecionado</span>
+        </div>
+        <div className="my-5 grid items-center gap-3 rounded-2xl border border-border bg-background/50 p-3 sm:grid-cols-[1fr_auto_1fr]">
+          {["Primeira parte", "Parte mais recente"].map((label, index) => <div key={label} className={`rounded-xl px-3 py-2 ${index ? "bg-feedback-info-surface" : ""} ${index ? "sm:col-start-3 sm:row-start-1" : ""}`}><p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">{label}</p><p className="mt-1 text-sm font-semibold tabular-nums">{loading ? "Carregando…" : range(index ? comparison?.recent : comparison?.previous)}</p></div>)}
+          <ArrowRight className="hidden size-4 text-muted-foreground sm:col-start-2 sm:row-start-1 sm:block" aria-hidden="true" />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          {metrics.map(({ title, icon: Icon, delta, previous, recent, rate, neutral, inverse }) => {
+            const tone = delta == null || delta === 0 ? "bg-muted text-muted-foreground" : neutral ? "bg-feedback-info-surface text-feedback-info" : (delta > 0) !== inverse ? "bg-feedback-error-surface text-feedback-error" : "bg-feedback-success-surface text-feedback-success";
+            return <div key={title} className="min-w-0 rounded-2xl border border-border p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2"><span className="flex items-center gap-2 text-sm font-semibold"><Icon className="size-4 text-feedback-info" aria-hidden="true" />{title}</span><span className={`rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums ${tone}`}>{loading ? "…" : delta == null ? "Sem base" : `${delta > 0 ? "+" : ""}${delta.toLocaleString("pt-BR")}${rate ? " p.p." : "%"}`}</span></div>
+              {loading ? <MetricSkeleton /> : <div className="mt-5 grid grid-cols-[1fr_auto_1fr] items-center gap-2"><div><p className="text-xl font-semibold tabular-nums">{number(previous, rate)}</p><p className="mt-1 text-[11px] text-muted-foreground">Primeira parte</p></div><ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" /><div className="text-right"><p className="text-xl font-semibold tabular-nums">{number(recent, rate)}</p><p className="mt-1 text-[11px] text-muted-foreground">Mais recente</p></div></div>}
+            </div>;
+          })}
+        </div>
+        <p className="mt-3 text-[11px] text-muted-foreground">p.p. = pontos percentuais.</p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function AnalyticsPage() {
@@ -126,12 +156,12 @@ function AnalyticsPage() {
           <Header title="Analytics" description="Tendências reais de volume, sucesso, duração e desempenho por workflow." period={period} setPeriod={setPeriod} refresh={refresh} loading={data.isFetching || refreshing} />
           <TelemetryStatus data={dashboard} error={refreshFailed || data.isError} placeholder={data.isPlaceholderData} loading={initialLoading} maxAgeMs={maxAgeMs} />
           <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-            <Metric title="Execuções" value={dashboard?.summary ? String(dashboard.summary.executions) : "—"} loading={initialLoading} />
-            <Metric title="Taxa de sucesso" value={dashboard?.summary?.successRate != null ? `${dashboard.summary.successRate}%` : "—"} loading={initialLoading} />
-            <Metric title="Falhas" value={dashboard?.summary ? String(dashboard.summary.errors) : "—"} loading={initialLoading} />
-            <Metric title="Tempo médio" value={dashboard?.summary?.averageDuration != null ? `${dashboard.summary.averageDuration}s` : "—"} loading={initialLoading} />
-            <Metric title="Tempo típico" value={dashboard?.summary?.p50Duration != null ? `${dashboard.summary.p50Duration}s` : "—"} loading={initialLoading} />
-            <Metric title="Tempo em execuções lentas" value={dashboard?.summary?.p95Duration != null ? `${dashboard.summary.p95Duration}s` : "—"} loading={initialLoading} />
+            <Metric icon={Play} title="Execuções" value={dashboard?.summary ? String(dashboard.summary.executions) : "—"} loading={initialLoading} />
+            <Metric icon={CheckCircle2} title="Taxa de sucesso" value={dashboard?.summary?.successRate != null ? `${dashboard.summary.successRate}%` : "—"} loading={initialLoading} />
+            <Metric icon={XCircle} title="Falhas" value={dashboard?.summary ? String(dashboard.summary.errors) : "—"} loading={initialLoading} />
+            <Metric icon={Timer} title="Duração média" value={dashboard?.summary?.averageDuration != null ? `${dashboard.summary.averageDuration}s` : "—"} loading={initialLoading} />
+            <Metric icon={Clock3} title="50% concluídas em até" value={dashboard?.summary?.p50Duration != null ? `${dashboard.summary.p50Duration}s` : "—"} loading={initialLoading} />
+            <Metric icon={Gauge} title="95% concluídas em até" value={dashboard?.summary?.p95Duration != null ? `${dashboard.summary.p95Duration}s` : "—"} loading={initialLoading} />
           </div>
 
           <div className="mt-6 grid gap-6 xl:grid-cols-[1.5fr_1fr]">
@@ -196,9 +226,9 @@ function AnalyticsPage() {
           <div className="mt-6"><ComparisonStrip comparison={dashboard?.comparison} loading={initialLoading} /></div>
 
           <div className="mb-6 grid gap-4 md:grid-cols-3">
-            <Metric title="Workflows com meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.configured) : "—"} loading={initialLoading} />
-            <Metric title="Dentro da meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.met) : "—"} loading={initialLoading} />
-            <Metric title="Fora da meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.breached) : "—"} loading={initialLoading} />
+            <Metric icon={Target} title="Workflows com meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.configured) : "—"} loading={initialLoading} />
+            <Metric icon={CheckCircle2} title="Dentro da meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.met) : "—"} loading={initialLoading} />
+            <Metric icon={AlertTriangle} title="Fora da meta" value={dashboard?.sloSummary ? String(dashboard.sloSummary.breached) : "—"} loading={initialLoading} />
           </div>
           <SloBudgetPanel workflows={dashboard?.workflowStats ?? []} loading={initialLoading} />
 
@@ -309,7 +339,7 @@ function ErrorsPage() {
         <div className="mx-auto max-w-[1450px]">
           <Header title="Erros" description="Falhas reais, workflows críticos e acesso direto ao detalhe técnico da execução." period={period} setPeriod={(value) => { setPeriod(value); setErrorPage(1); }} refresh={refresh} loading={data.isFetching || refreshing} />
           <TelemetryStatus data={dashboard} error={refreshFailed || data.isError} placeholder={data.isPlaceholderData} loading={initialLoading} maxAgeMs={maxAgeMs} />
-          <div className="grid gap-4 md:grid-cols-3"><Metric title="Falhas no período" value={dashboard?.summary ? String(dashboard.summary.errors) : "—"} loading={initialLoading} /><Metric title="Taxa de sucesso" value={dashboard?.summary?.successRate != null ? `${dashboard.summary.successRate}%` : "—"} loading={initialLoading} /><Metric title="Workflows com falha" value={dashboard?.summary ? String((dashboard.workflowStats ?? []).filter((workflow) => workflow.errors > 0).length) : "—"} loading={initialLoading} /></div>
+          <div className="grid gap-4 md:grid-cols-3"><Metric icon={XCircle} title="Falhas no período" value={dashboard?.summary ? String(dashboard.summary.errors) : "—"} loading={initialLoading} /><Metric icon={CheckCircle2} title="Taxa de sucesso" value={dashboard?.summary?.successRate != null ? `${dashboard.summary.successRate}%` : "—"} loading={initialLoading} /><Metric icon={Workflow} title="Workflows com falha" value={dashboard?.summary ? String((dashboard.workflowStats ?? []).filter((workflow) => workflow.errors > 0).length) : "—"} loading={initialLoading} /></div>
           <IncidentAttentionCenter incidents={(dashboard?.incidentGroups ?? []) as any[]} loading={initialLoading} />
           <div className="mt-6 grid gap-6 xl:grid-cols-[1.5fr_1fr]">
             <Card className="border-0 bg-card shadow-sm">
@@ -328,8 +358,8 @@ function ErrorsPage() {
   );
 }
 
-function Metric({ title, value, loading = false }: { title: string; value: string; loading?: boolean }) {
-  return <Card className="border-0 bg-card shadow-sm"><CardContent className="p-5"><p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">{title}</p>{loading ? <MetricSkeleton /> : <p className="mt-2 text-3xl font-semibold text-foreground">{value}</p>}</CardContent></Card>;
+function Metric({ title, value, icon: Icon, loading = false }: { title: string; value: string; icon: LucideIcon; loading?: boolean }) {
+  return <Card className="min-w-0 border-0 bg-card shadow-sm"><CardContent className="p-5"><div className="flex justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">{title}</p>{loading ? <MetricSkeleton className="max-w-full" /> : <p className="mt-2 text-3xl font-semibold text-foreground">{value}</p>}</div><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-feedback-info-surface text-feedback-info"><Icon className="h-4 w-4" aria-hidden="true" /></span></div></CardContent></Card>;
 }
 
 function Empty({ text }: { text: string }) {

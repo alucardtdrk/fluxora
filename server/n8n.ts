@@ -1030,13 +1030,24 @@ async function loadExecutions(includeData = false, period: Period = "all"): Prom
   return { ...live, archiveUnavailable: archiveConfigured() && !includeData };
 }
 
-function aggregate(workflows: N8nWorkflow[], executions: N8nExecution[]) {
+function workflowsWithHistory(workflows: N8nWorkflow[], executions: N8nExecution[]) {
+  const catalog = new Map(workflows.map(workflow => [workflow.id, { ...workflow, historical: false }]));
+  for (const execution of executions) {
+    const id = execution.workflowId || "unknown";
+    if (!catalog.has(id)) catalog.set(id, {
+      id, name: execution.workflowName || `Workflow sem cadastro (${id})`, active: false, tags: [], nodes: [], historical: true,
+    });
+  }
+  return Array.from(catalog.values());
+}
+
+function aggregate(workflows: Array<N8nWorkflow & { historical?: boolean }>, executions: N8nExecution[]) {
   const byWorkflow = new Map<string, N8nExecution[]>();
   for (const execution of executions) {
-    if (!execution.workflowId) continue;
-    const list = byWorkflow.get(execution.workflowId) ?? [];
+    const id = execution.workflowId || "unknown";
+    const list = byWorkflow.get(id) ?? [];
     list.push(execution);
-    byWorkflow.set(execution.workflowId, list);
+    byWorkflow.set(id, list);
   }
 
   return workflows.map((workflow) => {
@@ -1052,6 +1063,7 @@ function aggregate(workflows: N8nWorkflow[], executions: N8nExecution[]) {
       id: workflow.id,
       name: workflow.name,
       active: workflow.active,
+      historical: workflow.historical ?? false,
       executions: rows.length,
       success,
       errors,
@@ -1077,7 +1089,7 @@ export function summarizeDurations(durations: number[]) {
   };
 }
 
-type TrendSummaryPoint = { total: number; success: number; errors: number };
+type TrendSummaryPoint = { total: number; success: number; errors: number; startDate?: string; endDate?: string };
 
 function executionTrend(period: Period, executions: N8nExecution[], incomplete: boolean) {
   if (incomplete) return [];
@@ -1093,7 +1105,7 @@ function executionTrend(period: Period, executions: N8nExecution[], incomplete: 
   const monthly = days > 366;
   const step = days > 90 && period !== "90d" ? 7 : 1;
   const label = (time: number) => new Date(time).toLocaleDateString("pt-BR", { timeZone: BRAZIL_TIME_ZONE });
-  const rows: { date: string; total: number; success: number; errors: number }[] = [];
+  const rows: (TrendSummaryPoint & { date: string })[] = [];
   const monthIndices = new Map<string, number>();
   for (let start = bounds.start; start < bounds.end;) {
     const key = brazilDateKey(new Date(start));
@@ -1101,7 +1113,7 @@ function executionTrend(period: Period, executions: N8nExecution[], incomplete: 
     nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1, 1);
     const end = Math.min(bounds.end, monthly ? nextMonth.getTime() : start + step * day);
     monthIndices.set(key.slice(0, 7), rows.length);
-    rows.push({ date: !monthly && step === 1 ? label(start) : `${label(start)} a ${label(end - day)}`, total: 0, success: 0, errors: 0 });
+    rows.push({ date: !monthly && step === 1 ? label(start) : `${label(start)} a ${label(end - day)}`, startDate: brazilDateKey(new Date(start)), endDate: brazilDateKey(new Date(end - 1)), total: 0, success: 0, errors: 0 });
     start = end;
   }
   for (const item of executions) {
@@ -1126,7 +1138,7 @@ export function summarizeTrendComparison(rows: TrendSummaryPoint[]) {
     const success = items.reduce((sum, item) => sum + item.success, 0);
     const errors = items.reduce((sum, item) => sum + item.errors, 0);
     const completed = success + errors;
-    return { total, errors, successRate: completed ? (success / completed) * 100 : null };
+    return { total, errors, successRate: completed ? (success / completed) * 100 : null, startDate: items[0]?.startDate ?? null, endDate: items[items.length - 1]?.endDate ?? null };
   };
   const previous = summarize(rows.slice(0, midpoint));
   const recent = summarize(rows.slice(midpoint));
@@ -1159,8 +1171,10 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
     if (workflowResult.status === "rejected") console.error("n8n workflows unavailable; using archived execution metrics", { error: workflowResult.reason instanceof Error ? workflowResult.reason.name : "unknown" });
     const executionPage = executionResult.value;
     const selectedIds = new Set(workflowIds);
-    const selectedWorkflows = workflowIds.length ? workflows.filter((item) => selectedIds.has(item.id)) : workflows;
-    const executions = executionPage.items.filter((item) => withinPeriod(item, period) && (!workflowIds.length || (item.workflowId && selectedIds.has(item.workflowId))));
+    const periodExecutions = executionPage.items.filter((item) => withinPeriod(item, period));
+    const catalog = workflowsWithHistory(workflows, periodExecutions);
+    const selectedWorkflows = workflowIds.length ? catalog.filter((item) => selectedIds.has(item.id)) : catalog;
+    const executions = periodExecutions.filter((item) => !workflowIds.length || selectedIds.has(item.workflowId || "unknown"));
     const success = executions.filter((item) => statusKind(item.status) === "success").length;
     const errors = executions.filter((item) => statusKind(item.status) === "error").length;
     const running = executions.filter((item) => statusKind(item.status) === "running").length;
@@ -1210,6 +1224,7 @@ async function calculateN8nOverview(period: Period, workflowIds: string[], inact
       },
       chart: executionTrend(period, executions, executionPage.truncated).map(row => ({ day: !period.startsWith("custom:") && row.date === todayLabel ? "Hoje" : row.date.includes(" a ") ? row.date : row.date.slice(0, 5), total: row.total, sucesso: row.success, erro: row.errors })),
       workflowStats: aggregate(selectedWorkflows, executions),
+      workflowOptions: catalog.map(({ id, name, historical }) => ({ id, name, historical })),
       truncated: executionPage.truncated,
     };
   } catch (error) {
@@ -1251,7 +1266,8 @@ async function loadNormalizedExecutions(period: Period = "all") {
   return cached(`executions:normalized:${period}`, 30_000, 30_000, async () => {
     const [{ workflows }, raw] = await Promise.all([loadWorkflows(), loadExecutions(false, period)]);
     const names = workflowMap(workflows);
-    return { items: raw.items.map((item) => normalizeExecution(item, names)), truncated: raw.truncated };
+    const catalog = workflowsWithHistory(workflows, raw.items.filter(item => withinPeriod(item, period)));
+    return { items: raw.items.map((item) => normalizeExecution(item, names)), truncated: raw.truncated, workflowOptions: catalog.map(({ id, name, historical }) => ({ id, name, historical })) };
   });
 }
 
@@ -1301,7 +1317,7 @@ export async function listN8nExecutionsPage(input: {
     const raw = await loadNormalizedExecutions(input.period);
     const normalized = raw.items;
     const periodItems = normalized.filter((item) => withinPeriod(item, input.period));
-    const workflowItems = periodItems.filter((item) => !input.workflowId || input.workflowId === "all" || item.workflowId === input.workflowId);
+    const workflowItems = periodItems.filter((item) => !input.workflowId || input.workflowId === "all" || (item.workflowId || "unknown") === input.workflowId);
     // A workflow name is used only as a display fallback when n8n has no Sticky Note
     // or executed node metadata. Do not expose that fallback in the automation filter.
     const sections = Array.from(new Set(workflowItems
@@ -1317,7 +1333,7 @@ export async function listN8nExecutionsPage(input: {
     const totalPages = Math.max(1, Math.ceil(filtered.length / input.pageSize));
     const page = Math.min(Math.max(1, input.page), totalPages);
     const offset = (page - 1) * input.pageSize;
-    return { status: "ok" as const, connected: true as const, items: filtered.slice(offset, offset + input.pageSize), total: filtered.length, page, pageSize: input.pageSize, totalPages, sections, truncated: raw.truncated };
+    return { status: "ok" as const, connected: true as const, items: filtered.slice(offset, offset + input.pageSize), total: filtered.length, page, pageSize: input.pageSize, totalPages, sections, truncated: raw.truncated, workflowOptions: raw.workflowOptions };
   } catch (error) {
     return { status: errorStatus(error), connected: false as const, ...empty };
   }
@@ -1476,14 +1492,7 @@ async function calculateN8nAnalytics(period: Period) {
       rows.push(item);
       executionsByWorkflow.set(workflowId, rows);
     }
-    const historicalWorkflows = new Map(workflows.map(workflow => [workflow.id, workflow]));
-    for (const execution of executions) {
-      const id = execution.workflowId || "unknown";
-      if (!historicalWorkflows.has(id)) historicalWorkflows.set(id, {
-        id, name: execution.workflowName || `Workflow sem cadastro (${id})`, active: false, tags: [], nodes: [],
-      });
-    }
-    const stats = aggregate(Array.from(historicalWorkflows.values()), executions.map(item => item.workflowId ? item : { ...item, workflowId: "unknown" })).filter((item) => item.executions > 0 || alertRuleMap.has(item.id)).map((item) => {
+    const stats = aggregate(workflowsWithHistory(workflows, executions), executions).filter((item) => item.executions > 0 || alertRuleMap.has(item.id)).map((item) => {
       const slo = sloMap.get(item.id);
       const alertRule = alertRuleMap.get(item.id);
       const completedExecutions = item.success + item.errors;
