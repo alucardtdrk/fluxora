@@ -35,6 +35,26 @@ beforeEach(() => {
 });
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
+it("shows the comparison's actual ranges and unrounded rates, regardless of the selected preset", () => {
+  state.query.data.comparison = {
+    executionsDelta: -68.5, errorsDelta: -62.5, successRateDelta: -0.05,
+    previous: { total: 11029, errors: 32, successRate: 99.709592522, startDate: "2026-10-01", endDate: "2026-10-16" },
+    recent: { total: 3477, errors: 12, successRate: 99.654676259, startDate: "2026-10-17", endDate: "2026-10-31" },
+  };
+  const html = renderToStaticMarkup(React.createElement(Insights));
+  for (const text of ["01/10/2026 a 16/10/2026", "17/10/2026 a 31/10/2026", "11.029", "3.477", "99,7096%", "99,6547%", "-0,05 p.p."]) expect(html).toContain(text);
+  expect(html).toContain("Evolução dentro do período");
+});
+
+it("identifies comparison rates without a baseline instead of inventing percentages", () => {
+  const empty = { total: 0, errors: 0, successRate: null, startDate: null, endDate: null };
+  state.query.data.comparison = { executionsDelta: null, errorsDelta: null, successRateDelta: null, previous: empty, recent: empty };
+  const html = renderToStaticMarkup(React.createElement(Insights));
+  expect(html).toContain("Sem base");
+  expect(html).toContain("Datas indisponíveis");
+  expect(html).not.toContain("NaN");
+});
+
 for (const [name, Page] of [["analytics", Insights], ["errors", ErrorsInsights]] as const) {
   const render = () => renderToStaticMarkup(React.createElement(Page));
 
